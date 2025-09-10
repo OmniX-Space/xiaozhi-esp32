@@ -19,7 +19,7 @@ set(SOURCES "audio/audio_codec.cc"
             "protocols/websocket_protocol.cc"
             "mcp_server.cc"
             "system_info.cc"
-            "application.cc"
+           
             "ota.cc"
             "settings.cc"
             "device_state_event.cc"
