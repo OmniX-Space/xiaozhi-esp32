@@ -1,6 +1,6 @@
 dependencies:
   78/esp-ml307:
-    component_hash: 97a1eeb5274d841bbfbe50ef6b6976f028b0f53e57aee95eda57f49048d02fb9
+    component_hash: 6e027bda53d9ac45ae17f33cce84c3b9fc0f5bdbe61a5b1642798d3088035a13
     dependencies:
     - name: idf
       require: private
@@ -8,7 +8,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 3.3.0
+    version: 3.3.3
   78/esp-opus:
     component_hash: 8182b733f071d7bfe1e837f4c9f8649a63e4c937177f089e65772880c02f2e17
     dependencies:
@@ -58,7 +58,7 @@ dependencies:
       type: service
     version: 1.0.0
   78/xiaozhi-fonts:
-    component_hash: d9cc3aad735638e558cee514103b25d2cb60afc78ef53709ffeea443b4d1c835
+    component_hash: 677fa98425b8c20f3db336c81b5abdf0445ea0adf2ce40b28940daaa84c92dcb
     dependencies:
     - name: idf
       require: private
@@ -66,7 +66,7 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.5.1
+    version: 1.5.2
   chmorgan/esp-libhelix-mp3:
     component_hash: cbb76089dc2c5749f7b470e2e70aedc44c9da519e04eb9a67d4c7ec275229e53
     dependencies:
@@ -336,7 +336,7 @@ dependencies:
       type: service
     version: 1.0.1
   espressif/esp_lcd_st7796:
-    component_hash: 00ab2872c56a4037e6d1efda104ef0da00c5296865f8f938cc7cc2fc3e99f962
+    component_hash: 9e165065cf25b4575dd9f587440ad22aa94d011359d55a97fc39bb691a9fc0cd
     dependencies:
     - name: espressif/cmake_utilities
       registry_url: https://components.espressif.com
@@ -353,7 +353,7 @@ dependencies:
     - esp32s2
     - esp32s3
     - esp32p4
-    version: 1.3.2
+    version: 1.3.4
   espressif/esp_lcd_touch:
     component_hash: 779b4ba2464a3ae85681e4b860caa5fdc35801458c23f3039ee761bae7f442a4
     dependencies:
@@ -654,6 +654,6 @@ direct_dependencies:
 - waveshare/esp_lcd_sh8601
 - waveshare/esp_lcd_touch_cst9217
 - wvirgil123/sscma_client
-manifest_hash: 1af3184e8179db5dd2d5a0a78e420c425305f4b1d7378a0340ce6fbbffd67c14
+manifest_hash: 659036190b734dad33276480a74cb2e2104cfe1b84178427bce474673a9f6e04
 target: esp32s3
 version: 2.0.0

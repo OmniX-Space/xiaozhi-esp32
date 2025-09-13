@@ -38,6 +38,7 @@ private:
     std::string current_music_url_;
     std::string current_song_name_;
     bool song_name_displayed_;
+    std::atomic<bool> stop_flag_{false}; // 停止播放标志位
     
     // 歌词相关
     std::string current_lyric_url_;

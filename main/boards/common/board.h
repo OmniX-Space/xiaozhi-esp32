@@ -12,6 +12,8 @@
 #include "backlight.h"
 #include "camera.h"
 #include "music.h"
+#include "assets.h"
+
 
 void* create_board();
 class AudioCodec;
@@ -30,14 +32,13 @@ protected:
 
     // 音乐播放器实例
     Music* music_;
-
 public:
     static Board& GetInstance() {
         static Board* instance = static_cast<Board*>(create_board());
         return *instance;
     }
 
-    virtual ~Board();
+    virtual ~Board();  // 改为非默认析构函数，用于清理 music_
     virtual std::string GetBoardType() = 0;
     virtual std::string GetUuid() { return uuid_; }
     virtual Backlight* GetBacklight() { return nullptr; }
@@ -51,10 +52,11 @@ public:
     virtual void StartNetwork() = 0;
     virtual const char* GetNetworkStateIcon() = 0;
     virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging);
-    virtual std::string GetJson();
+    virtual std::string GetSystemInfoJson();
     virtual void SetPowerSaveMode(bool enabled) = 0;
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
+    virtual Assets* GetAssets();
 };
 
 #define DECLARE_BOARD(BOARD_CLASS_NAME) \
