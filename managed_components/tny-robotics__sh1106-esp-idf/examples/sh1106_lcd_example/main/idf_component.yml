@@ -1,4 +1,0 @@
-dependencies:
-  pedrominatel/shtc3:
-    version: "*"
-    override_path: '../../../'

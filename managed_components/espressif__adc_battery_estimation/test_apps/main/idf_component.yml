@@ -1,5 +1,0 @@
-dependencies:
-  idf: ">=5.0"
-  adc_battery_estimation:
-    version: "*"
-    override_path: "../../../adc_battery_estimation"

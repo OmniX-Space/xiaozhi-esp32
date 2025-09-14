@@ -1,4 +1,0 @@
-dependencies:
-  espressif/freetype:
-    version: "*"
-    override_path: "../../.."
