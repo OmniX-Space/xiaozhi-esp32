@@ -35,17 +35,28 @@ void AudioCodec::Start() {
     }
 
     // 保存原始输出采样率
-    if (original_output_sample_rate_ == 0){
+    if (original_output_sample_rate_ == 0) {
         original_output_sample_rate_ = output_sample_rate_;
         ESP_LOGI(TAG, "Saved original output sample rate: %d Hz", original_output_sample_rate_);
     }
 
     if (tx_handle_ != nullptr) {
-        ESP_ERROR_CHECK(i2s_channel_enable(tx_handle_));
+        esp_err_t err = i2s_channel_enable(tx_handle_);
+        if (err == ESP_ERR_INVALID_STATE) {
+            // 已经启用，忽略
+            ESP_LOGW(TAG, "TX channel already enabled");
+        } else {
+            ESP_ERROR_CHECK(err);
+        }
     }
 
     if (rx_handle_ != nullptr) {
-        ESP_ERROR_CHECK(i2s_channel_enable(rx_handle_));
+        esp_err_t err = i2s_channel_enable(rx_handle_);
+        if (err == ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(TAG, "RX channel already enabled");
+        } else {
+            ESP_ERROR_CHECK(err);
+        }
     }
 
     EnableInput(true);

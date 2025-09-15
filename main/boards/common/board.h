@@ -11,8 +11,9 @@
 #include "led/led.h"
 #include "backlight.h"
 #include "camera.h"
-#include "music.h"
 #include "assets.h"
+
+#include "music.h"
 
 
 void* create_board();
@@ -32,6 +33,7 @@ protected:
 
     // 音乐播放器实例
     Music* music_;
+
 public:
     static Board& GetInstance() {
         static Board* instance = static_cast<Board*>(create_board());

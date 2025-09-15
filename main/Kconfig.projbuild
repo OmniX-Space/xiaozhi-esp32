@@ -94,6 +94,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_BREAD_COMPACT_WIFI_CAM
         bool "面包板新版接线（WiFi）+ LCD + Camera"
         depends on IDF_TARGET_ESP32S3     
+    config BOARD_TYPE_ESP32S3_SMART_SPEAKER
+        bool "ESP32-S3 智能音箱（PCM5102+INMP441）"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_BREAD_COMPACT_ML307
         bool "面包板新版接线（ML307 AT）"
         depends on IDF_TARGET_ESP32S3
@@ -370,6 +373,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_SURFER_C3_1_14TFT
         bool "Surfer-C3-1-14TFT"
         depends on IDF_TARGET_ESP32C3
+    config BOARD_TYPE_YUNLIAO_S3
+        bool "小智云聊-S3"
+        depends on IDF_TARGET_ESP32S3
 endchoice
 
 choice ESP_S3_LCD_EV_Board_Version_TYPE
@@ -529,7 +535,7 @@ config USE_AUDIO_PROCESSOR
 config USE_DEVICE_AEC
     bool "Enable Device-Side AEC"
     default n
-        depends on USE_AUDIO_PROCESSOR && (BOARD_TYPE_ESP_BOX_3 || BOARD_TYPE_ESP_BOX || BOARD_TYPE_ESP_BOX_LITE || BOARD_TYPE_LICHUANG_DEV || BOARD_TYPE_ESP32S3_KORVO2_V3 || BOARD_TYPE_ESP32S3_Touch_AMOLED_1_75 || BOARD_TYPE_ESP32S3_Touch_AMOLED_2_06 || BOARD_TYPE_ESP32P4_WIFI6_Touch_LCD_4B || BOARD_TYPE_ESP32P4_WIFI6_Touch_LCD_XC || BOARD_TYPE_ESP_S3_LCD_EV_Board_2)
+        depends on USE_AUDIO_PROCESSOR && (BOARD_TYPE_ESP_BOX_3 || BOARD_TYPE_ESP_BOX || BOARD_TYPE_ESP_BOX_LITE || BOARD_TYPE_LICHUANG_DEV || BOARD_TYPE_ESP32S3_KORVO2_V3 || BOARD_TYPE_ESP32S3_Touch_AMOLED_1_75 || BOARD_TYPE_ESP32S3_Touch_AMOLED_2_06 || BOARD_TYPE_ESP32P4_WIFI6_Touch_LCD_4B || BOARD_TYPE_ESP32P4_WIFI6_Touch_LCD_XC || BOARD_TYPE_ESP_S3_LCD_EV_Board_2 || BOARD_TYPE_YUNLIAO_S3)
     help
         因为性能不够，不建议和微信聊天界面风格同时开启
 
@@ -565,16 +571,25 @@ config RECEIVE_CUSTOM_MESSAGE
     help
         启用接收自定义消息功能，允许设备接收来自服务器的自定义消息（最好通过 MQTT 协议）
 
-choice I2S_TYPE_TAIJIPI_S3
+menu TAIJIPAI_S3_CONFIG
     depends on BOARD_TYPE_ESP32S3_Taiji_Pi
-    prompt "taiji-pi-S3 I2S Type"
-    default TAIJIPAI_I2S_TYPE_STD
+    choice I2S_TYPE_TAIJIPI_S3
+        depends on BOARD_TYPE_ESP32S3_Taiji_Pi
+        prompt "taiji-pi-S3 I2S Type"
+        default TAIJIPAI_I2S_TYPE_STD
+        help
+            I2S 类型选择
+        config TAIJIPAI_I2S_TYPE_STD
+            bool "I2S Type STD"
+        config TAIJIPAI_I2S_TYPE_PDM
+            bool "I2S Type PDM"
+    endchoice
+
+    config I2S_USE_2SLOT
+    bool "Enable Use 2 Slot"
+    default n
     help
-        I2S 类型选择
-    config TAIJIPAI_I2S_TYPE_STD
-        bool "I2S Type STD"
-    config TAIJIPAI_I2S_TYPE_PDM
-        bool "I2S Type PDM"
-endchoice
+        启动双声道
+endmenu
 
 endmenu

@@ -540,6 +540,12 @@ void Application::Start() {
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
     }
+
+    // Start the main event loop task with priority 3
+    xTaskCreate([](void* arg) {
+        ((Application*)arg)->MainEventLoop();
+        vTaskDelete(NULL);
+    }, "main_event_loop", 2048 * 4, this, 3, &main_event_loop_task_handle_);
 }
 
 // Add a async task to MainLoop
@@ -555,9 +561,6 @@ void Application::Schedule(std::function<void()> callback) {
 // If other tasks need to access the websocket or chat state,
 // they should use Schedule to call this function
 void Application::MainEventLoop() {
-    // Raise the priority of the main event loop to avoid being interrupted by background tasks (which has priority 2)
-    vTaskPrioritySet(NULL, 3);
-
     while (true) {
         auto bits = xEventGroupWaitBits(event_group_, MAIN_EVENT_SCHEDULE |
             MAIN_EVENT_SEND_AUDIO |
@@ -682,17 +685,6 @@ void Application::SetDeviceState(DeviceState state) {
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
-
-    // 当从idle状态变成其他任何状态时，停止音乐播放
-    if (previous_state == kDeviceStateIdle && state != kDeviceStateIdle) {
-        auto music = board.GetMusic();
-        if (music) {
-            ESP_LOGI(TAG, "Stopping music streaming due to state change: %s -> %s", 
-                    STATE_STRINGS[previous_state], STATE_STRINGS[state]);
-            music->StopStreaming();
-        }
-    }
-
     switch (state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
@@ -843,11 +835,20 @@ bool Application::CanEnterSleepMode() {
 }
 
 void Application::SendMcpMessage(const std::string& payload) {
-    Schedule([this, payload]() {
-        if (protocol_) {
+    if (protocol_ == nullptr) {
+        return;
+    }
+
+    // Make sure you are using main thread to send MCP message
+    if (xTaskGetCurrentTaskHandle() == main_event_loop_task_handle_) {
+        ESP_LOGI(TAG, "Send MCP message in main thread");
+        protocol_->SendMcpMessage(payload);
+    } else {
+        ESP_LOGI(TAG, "Send MCP message in sub thread");
+        Schedule([this, payload = std::move(payload)]() {
             protocol_->SendMcpMessage(payload);
-        }
-    });
+        });
+    }
 }
 
 void Application::SetAecMode(AecMode mode) {
@@ -889,6 +890,9 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
             
             // 检查采样率是否匹配，如果不匹配则进行简单重采样
             if (packet.sample_rate != codec->output_sample_rate()) {
+                // ESP_LOGI(TAG, "Resampling music audio from %d to %d Hz", 
+                //         packet.sample_rate, codec->output_sample_rate());
+                
                 // 验证采样率参数
                 if (packet.sample_rate <= 0 || codec->output_sample_rate() <= 0) {
                     ESP_LOGE(TAG, "Invalid sample rates: %d -> %d", 
@@ -896,12 +900,19 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
                     return;
                 }
                 
-                // 尝试动态切换采样率
-                if (codec->SetOutputSampleRate(packet.sample_rate)) {
-                    ESP_LOGI(TAG, "Successfully switched to music playback sampling rate: %d Hz", packet.sample_rate);
+                std::vector<int16_t> resampled;
+                
+                if (packet.sample_rate > codec->output_sample_rate()) {
+                    ESP_LOGI(TAG, "Music Player: Adjust the sampling rate from %d Hz to %d Hz", 
+                        codec->output_sample_rate(), packet.sample_rate);
+
+                    // 尝试动态切换采样率
+                    if (codec->SetOutputSampleRate(packet.sample_rate)) {
+                        ESP_LOGI(TAG, "Successfully switched to music playback sampling rate: %d Hz", packet.sample_rate);
+                    } else {
+                        ESP_LOGW(TAG, "Unable to switch sampling rate, continue using current sampling rate: %d Hz", codec->output_sample_rate());
+                    }
                 } else {
-                    ESP_LOGW(TAG, "Unable to switch sampling rate, continue using current sampling rate: %d Hz", codec->output_sample_rate());
-                    // 如果无法切换采样率，继续使用当前的采样率进行处理
                     if (packet.sample_rate > codec->output_sample_rate()) {
                         // 下采样：简单丢弃部分样本
                         float downsample_ratio = static_cast<float>(packet.sample_rate) / codec->output_sample_rate();
@@ -922,12 +933,13 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
                         // 上采样：线性插值
                         float upsample_ratio = codec->output_sample_rate() / static_cast<float>(packet.sample_rate);
                         size_t expected_size = static_cast<size_t>(pcm_data.size() * upsample_ratio + 0.5f);
-                        std::vector<int16_t> resampled(expected_size);
-                        
+                        resampled.reserve(expected_size);
+                    
                         for (size_t i = 0; i < pcm_data.size(); ++i) {
                             // 添加原始样本
-                            resampled[i * static_cast<size_t>(upsample_ratio)] = pcm_data[i];
-                            
+                            resampled.push_back(pcm_data[i]);
+                        
+                        
                             // 计算需要插值的样本数
                             int interpolation_count = static_cast<int>(upsample_ratio) - 1;
                             if (interpolation_count > 0 && i + 1 < pcm_data.size()) {
@@ -936,21 +948,22 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
                                 for (int j = 1; j <= interpolation_count; ++j) {
                                     float t = static_cast<float>(j) / (interpolation_count + 1);
                                     int16_t interpolated = static_cast<int16_t>(current + (next - current) * t);
-                                    resampled[i * static_cast<size_t>(upsample_ratio) + j] = interpolated;
+                                    resampled.push_back(interpolated);
                                 }
                             } else if (interpolation_count > 0) {
                                 // 最后一个样本，直接重复
                                 for (int j = 1; j <= interpolation_count; ++j) {
-                                    resampled[i * static_cast<size_t>(upsample_ratio) + j] = pcm_data[i];
+                                    resampled.push_back(pcm_data[i]);
                                 }
                             }
                         }
-                        
-                        pcm_data = std::move(resampled);
+
                         ESP_LOGI(TAG, "Upsampled %d -> %d samples (ratio: %.2f)", 
-                                pcm_data.size() / static_cast<size_t>(upsample_ratio), pcm_data.size(), upsample_ratio);
+                            pcm_data.size(), resampled.size(), upsample_ratio);
                     }
                 }
+                
+                pcm_data = std::move(resampled);
             }
             
             // 确保音频输出已启用

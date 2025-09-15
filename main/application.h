@@ -61,11 +61,9 @@ public:
     void SendMcpMessage(const std::string& payload);
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
-
-    // 新增：接收外部音频数据（如音乐播放）
-    void AddAudioData(AudioStreamPacket&& packet);
     void PlaySound(const std::string_view& sound);
     AudioService& GetAudioService() { return audio_service_; }
+    void AddAudioData(AudioStreamPacket&& packet);
 
 private:
     Application();
@@ -86,12 +84,28 @@ private:
     bool aborted_ = false;
     int clock_ticks_ = 0;
     TaskHandle_t check_new_version_task_handle_ = nullptr;
+    TaskHandle_t main_event_loop_task_handle_ = nullptr;
 
     void OnWakeWordDetected();
     void CheckNewVersion(Ota& ota);
     void CheckAssetsVersion();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
+};
+
+
+class TaskPriorityReset {
+public:
+    TaskPriorityReset(BaseType_t priority) {
+        original_priority_ = uxTaskPriorityGet(NULL);
+        vTaskPrioritySet(NULL, priority);
+    }
+    ~TaskPriorityReset() {
+        vTaskPrioritySet(NULL, original_priority_);
+    }
+
+private:
+    BaseType_t original_priority_;
 };
 
 #endif // _APPLICATION_H_

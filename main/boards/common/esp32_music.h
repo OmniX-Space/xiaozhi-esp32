@@ -38,7 +38,6 @@ private:
     std::string current_music_url_;
     std::string current_song_name_;
     bool song_name_displayed_;
-    std::atomic<bool> stop_flag_{false}; // 停止播放标志位
     
     // 歌词相关
     std::string current_lyric_url_;
@@ -51,6 +50,7 @@ private:
     std::atomic<DisplayMode> display_mode_;
     std::atomic<bool> is_playing_;
     std::atomic<bool> is_downloading_;
+    std::atomic<bool> is_paused_;
     std::thread play_thread_;
     std::thread download_thread_;
     int64_t current_play_time_ms_;  // 当前播放时间(毫秒)
@@ -102,11 +102,20 @@ public:
     virtual bool StopStreaming() override;  // 停止流式播放
     virtual size_t GetBufferSize() const override { return buffer_size_; }
     virtual bool IsDownloading() const override { return is_downloading_; }
+    virtual bool IsPlaying() const override { return is_playing_; }
+    virtual bool IsPaused() const override { return is_paused_; }
     virtual int16_t* GetAudioData() override { return final_pcm_data_fft; }
     
     // 显示模式控制方法
     void SetDisplayMode(DisplayMode mode);
     DisplayMode GetDisplayMode() const { return display_mode_.load(); }
+    
+    // MCP工具需要的方法
+    virtual bool PlaySong() override;
+    virtual bool SetVolume(int volume) override;
+    virtual bool StopSong() override;
+    virtual bool PauseSong() override;
+    virtual bool ResumeSong() override;
 };
 
 #endif // ESP32_MUSIC_H

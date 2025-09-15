@@ -12,6 +12,8 @@
 
 项目主要贡献者：小霜霜Meow(抖音、B站UP)、空白泡泡糖果（B站UP），硅灵造物科技（B站UP）
 
+项目其它贡献者：[@zhubinsheng](https://github.com/zhubinsheng)
+
 贡献者说明：引入部分其它贡献者在其它项目上的代码，并进行了部分修改。
 
 音乐服务器、相关源码提供者(为爱发电)：小霜霜Meow
@@ -31,27 +33,30 @@
 ### ⚙️已支持硬件芯片系列
 
 - ESP32
-- ESP32-S2
 - ESP32-S3
-- ESP32-C2
 - ESP32-C3
-- ESP32-C5
 - ESP32-C6
-- ESP32-C61
-- ESP32-H2
-- ESP32-H4
-- ESP32-H21
 - ESP32-P4
 
 ❕大部分硬件由于没有进行完整测试，可能会存在一些问题，属于正常现象，具体可提交issues进行反馈。
 
 ### 项目改动范围
 新增:
+- main/schedule_manager.h
+- main/schedule_manager.cc
+- main/audio/timer_manager.h
+- main/audio/timer_manager.cc
 - main/boards/common/music.h
 - main/boards/common/esp32_music.h
 - main/boards/common/esp32_music.cc
+- main/display/esplog_display.h
+- main/display/esplog_display.cc
+- main/protocols/sleep_music_protocol.h
+- main/protocols/sleep_music_protocol.cc
 
 修改:
+- main/audio/codecs/no_audio_codec.h
+- main/audio/codecs/no_audio_codec.cc
 - main/audio/audio_codec.h
 - main/audio/audio_codec.cc
 - main/audio/audio_service.h

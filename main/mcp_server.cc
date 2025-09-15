@@ -19,9 +19,10 @@
 #include "lvgl_theme.h"
 #include "lvgl_display.h"
 
-#define TAG "MCP"
+#include "schedule_manager.h"
+#include "timer_manager.h"
 
-#define DEFAULT_TOOLCALL_STACK_SIZE 6144
+#define TAG "MCP"
 
 McpServer::McpServer() {
 }
@@ -53,17 +54,6 @@ void McpServer::AddCommonTools() {
         PropertyList(),
         [&board](const PropertyList& properties) -> ReturnValue {
             return board.GetDeviceStatusJson();
-        });
-    
-    AddTool("self.search_music",
-        "Transfer to music playback tool.\n"
-        "Use this tool for: \n"
-        "1. When a user sends a music playback request.\n"
-        "2. When music playback related parameters are not configured in the character introduction.\n",
-        PropertyList(),
-        [&board](const PropertyList &properties) -> ReturnValue {
-            ESP_LOGW(TAG, "Use self.music.play_song tool to play music.");
-            return "Please use MPC Tool self.music.play_song tool to play music.";
         });
 
     AddTool("self.audio_speaker.set_volume", 
@@ -123,6 +113,9 @@ void McpServer::AddCommonTools() {
                 Property("question", kPropertyTypeString)
             }),
             [camera](const PropertyList& properties) -> ReturnValue {
+                // Lower the priority to do the camera capture
+                TaskPriorityReset priority_reset(1);
+
                 if (!camera->Capture()) {
                     throw std::runtime_error("Failed to capture photo");
                 }
@@ -131,72 +124,103 @@ void McpServer::AddCommonTools() {
             });
     }
 #endif
-
 auto music = board.GetMusic();
-    if (music)
-    {
+    if (music) {
         AddTool("self.music.play_song",
-                "Play the specified song. When users request to play music, this tool will automatically retrieve song details and start streaming.\n"
-                "parameter:\n"
-                "  `song_name`: The name of the song to be played.\n"
-                "return:\n"
-                "  Play status information without confirmation, immediately play the song.",
-                PropertyList({Property("song_name", kPropertyTypeString)}),
-                [music](const PropertyList &properties) -> ReturnValue
-                {
-                    auto song_name = properties["song_name"].value<std::string>();
-                    if (!music->Download(song_name))
-                    {
-                        return "{\"success\": false, \"message\": \"Failed to obtain music resources\"}";
-                    }
-                    auto download_result = music->GetDownloadResult();
-                    ESP_LOGD(TAG, "Music details result: %s", download_result.c_str());
-                    return true;
-                });
+            "Play the specified song. When users request to play music, this tool will automatically retrieve song details and start streaming.\n"
+            "parameter:\n"
+            "  `song_name`: The name of the song to be played.\n"
+            "return:\n"
+            "  Play status information without confirmation, immediately play the song.",
+            PropertyList({Property("song_name", kPropertyTypeString)}),
+            [music](const PropertyList &properties) -> ReturnValue {
+                auto song_name = properties["song_name"].value<std::string>();
+                if (!music->Download(song_name)) {
+                    return "{\"success\": false, \"message\": \"Failed to obtain music resources\"}";
+                }
+                auto download_result = music->GetDownloadResult();
+                ESP_LOGD(TAG, "Music details result: %s", download_result.c_str());
+                return true;
+            });
+
+        AddTool("self.music.set_volume",
+            "Set music volume (0-100).",
+            PropertyList({Property("volume", kPropertyTypeInteger, 0, 100)}),
+            [music](const PropertyList &properties) -> ReturnValue {
+                int vol = properties["volume"].value<int>();
+                bool ok = music->SetVolume(vol);
+                return ok;
+            });
+
+        AddTool("self.music.play",
+            "Play current music.",
+            PropertyList(),
+            [music](const PropertyList &properties) -> ReturnValue {
+                bool ok = music->PlaySong();
+                return ok;
+            });
+
+        // 兼容更明确的命名：stop_song / pause_song / resume_song
+        AddTool("self.music.stop_song",
+            "Stop current song.",
+            PropertyList(),
+            [music](const PropertyList &properties) -> ReturnValue {
+                bool ok = music->StopSong();
+                return ok;
+            });
+
+        AddTool("self.music.pause_song",
+            "Pause current song.",
+            PropertyList(),
+            [music](const PropertyList &properties) -> ReturnValue {
+                bool ok = music->PauseSong();
+                return ok;
+            });
+
+        AddTool("self.music.resume_song",
+            "Resume current song.",
+            PropertyList(),
+            [music](const PropertyList &properties) -> ReturnValue {
+                bool ok = music->ResumeSong();
+                return ok;
+            });
 
         AddTool("self.music.set_display_mode",
-                "Set the display mode for music playback. You can choose to display the spectrum or lyrics, for example, if the user says' open spectrum 'or' display spectrum ', the corresponding display mode will be set for' open lyrics' or 'display lyrics'.\n"
-                "parameter:\n"
-                "  `mode`: Display mode, with optional values of 'spectrum' or 'lyrics'.\n"
-                "return:\n"
-                "  Set result information.",
-                PropertyList({
-                    Property("mode", kPropertyTypeString) // Display mode: "spectrum" or "lyrics"
-                }),
-                [music](const PropertyList &properties) -> ReturnValue
-                {
-                    auto mode_str = properties["mode"].value<std::string>();
+            "Set the display mode for music playback. You can choose to display the spectrum or lyrics, for example, if the user says' open spectrum 'or' display spectrum ', the corresponding display mode will be set for' open lyrics' or 'display lyrics'.\n"
+            "parameter:\n"
+            "  `mode`: Display mode, with optional values of 'spectrum' or 'lyrics'.\n"
+            "return:\n"
+            "  Set result information.",
+            PropertyList({
+                Property("mode", kPropertyTypeString) // Display mode: "spectrum" or "lyrics"
+            }),
+            [music](const PropertyList &properties) -> ReturnValue {
+                auto mode_str = properties["mode"].value<std::string>();
 
-                    // Convert to lowercase for comparison
-                    std::transform(mode_str.begin(), mode_str.end(), mode_str.begin(), ::tolower);
+                // Convert to lowercase for comparison
+                std::transform(mode_str.begin(), mode_str.end(), mode_str.begin(), ::tolower);
 
-                    if (mode_str == "spectrum" || mode_str == "频谱")
-                    {
-                        // Set to spectrum display mode
-                        auto esp32_music = static_cast<Esp32Music *>(music);
+                if (mode_str == "spectrum" || mode_str == "频谱") {
+                    // Set to spectrum display mode
+                    auto esp32_music = static_cast<Esp32Music *>(music);
                         esp32_music->SetDisplayMode(Esp32Music::DISPLAY_MODE_SPECTRUM);
-                        return "{\"success\": true, \"message\": \"Switched to spectrum display mode\"}";
-                    }
-                    else if (mode_str == "lyrics" || mode_str == "歌词")
-                    {
-                        // Set to lyrics display mode
-                        auto esp32_music = static_cast<Esp32Music *>(music);
-                        esp32_music->SetDisplayMode(Esp32Music::DISPLAY_MODE_LYRICS);
-                        return "{\"success\": true, \"message\": \"Switched to lyrics display mode\"}";
-                    }
-                    else
-                    {
-                        return "{\"success\": false, \"message\": \"Invalid display mode, please use 'spectrum' or 'lyrics'\"}";
-                    }
+                    return "{\"success\": true, \"message\": \"Switched to spectrum display mode\"}";
+                } else if (mode_str == "lyrics" || mode_str == "歌词") {
+                    // Set to lyrics display mode
+                    auto esp32_music = static_cast<Esp32Music *>(music);
+                    esp32_music->SetDisplayMode(Esp32Music::DISPLAY_MODE_LYRICS);
+                    return "{\"success\": true, \"message\": \"Switched to lyrics display mode\"}";
+                } else {
+                    return "{\"success\": false, \"message\": \"Invalid display mode, please use 'spectrum' or 'lyrics'\"}";
+                }
 
-                    return "{\"success\": false, \"message\": \"Failed to set display mode\"}";
-                });
+                return "{\"success\": false, \"message\": \"Failed to set display mode\"}";
+            });
     }
 
     // Restore the original tools list to the end of the tools list
     tools_.insert(tools_.end(), original_tools.begin(), original_tools.end());
 }
-
 
 void McpServer::AddUserOnlyTools() {
     // System tools
@@ -212,10 +236,10 @@ void McpServer::AddUserOnlyTools() {
         PropertyList(),
         [this](const PropertyList& properties) -> ReturnValue {
             auto& app = Application::GetInstance();
-            app.Schedule([]() {
+            app.Schedule([&app]() {
                 ESP_LOGW(TAG, "User requested reboot");
                 vTaskDelay(pdMS_TO_TICKS(1000));
-                auto& app = Application::GetInstance();
+
                 app.Reboot();
             });
             return true;
@@ -231,8 +255,7 @@ void McpServer::AddUserOnlyTools() {
             ESP_LOGI(TAG, "User requested firmware upgrade from URL: %s", url.c_str());
             
             auto& app = Application::GetInstance();
-            app.Schedule([url]() {
-                auto& app = Application::GetInstance();
+            app.Schedule([url, &app]() {
                 auto ota = std::make_unique<Ota>();
                 
                 bool success = app.UpgradeFirmware(*ota, url);
@@ -246,7 +269,7 @@ void McpServer::AddUserOnlyTools() {
 
     // Display control
 #ifdef HAVE_LVGL
-    auto display = static_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
+    auto display = dynamic_cast<LvglDisplay*>(Board::GetInstance().GetDisplay());
     if (display) {
         AddUserOnlyTool("self.screen.get_info", "Information about the screen, including width, height, etc.",
             PropertyList(),
@@ -254,12 +277,69 @@ void McpServer::AddUserOnlyTools() {
                 cJSON *json = cJSON_CreateObject();
                 cJSON_AddNumberToObject(json, "width", display->width());
                 cJSON_AddNumberToObject(json, "height", display->height());
-                if (static_cast<OledDisplay*>(display)) {
+                if (dynamic_cast<OledDisplay*>(display)) {
                     cJSON_AddBoolToObject(json, "monochrome", true);
                 } else {
                     cJSON_AddBoolToObject(json, "monochrome", false);
                 }
                 return json;
+            });
+
+        AddUserOnlyTool("self.screen.snapshot", "Snapshot the screen and upload it to a specific URL",
+            PropertyList({
+                Property("url", kPropertyTypeString),
+                Property("quality", kPropertyTypeInteger, 80, 1, 100)
+            }),
+            [display](const PropertyList& properties) -> ReturnValue {
+                auto url = properties["url"].value<std::string>();
+                auto quality = properties["quality"].value<int>();
+
+                uint8_t* jpeg_output_data = nullptr;
+                size_t jpeg_output_size = 0;
+                if (!display->SnapshotToJpeg(jpeg_output_data, jpeg_output_size, quality)) {
+                    throw std::runtime_error("Failed to snapshot screen");
+                }
+
+                ESP_LOGI(TAG, "Upload snapshot %u bytes to %s", jpeg_output_size, url.c_str());
+                
+                // 构造multipart/form-data请求体
+                std::string boundary = "----ESP32_SCREEN_SNAPSHOT_BOUNDARY";
+                
+                auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
+                http->SetHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
+                if (!http->Open("POST", url)) {
+                    free(jpeg_output_data);
+                    throw std::runtime_error("Failed to open URL: " + url);
+                }
+                {
+                    // 文件字段头部
+                    std::string file_header;
+                    file_header += "--" + boundary + "\r\n";
+                    file_header += "Content-Disposition: form-data; name=\"file\"; filename=\"screenshot.jpg\"\r\n";
+                    file_header += "Content-Type: image/jpeg\r\n";
+                    file_header += "\r\n";
+                    http->Write(file_header.c_str(), file_header.size());
+                }
+
+                // JPEG数据
+                http->Write((const char*)jpeg_output_data, jpeg_output_size);
+                free(jpeg_output_data);
+
+                {
+                    // multipart尾部
+                    std::string multipart_footer;
+                    multipart_footer += "\r\n--" + boundary + "--\r\n";
+                    http->Write(multipart_footer.c_str(), multipart_footer.size());
+                }
+                http->Write("", 0);
+
+                if (http->GetStatusCode() != 200) {
+                    throw std::runtime_error("Unexpected status code: " + std::to_string(http->GetStatusCode()));
+                }
+                std::string result = http->ReadAll();
+                http->Close();
+                ESP_LOGI(TAG, "Snapshot screen result: %s", result.c_str());
+                return true;
             });
         
         AddUserOnlyTool("self.screen.preview_image", "Preview an image on the screen",
@@ -273,12 +353,16 @@ void McpServer::AddUserOnlyTools() {
                 if (!http->Open("GET", url)) {
                     throw std::runtime_error("Failed to open URL: " + url);
                 }
-                if (http->GetStatusCode() != 200) {
-                    throw std::runtime_error("Unexpected status code: " + std::to_string(http->GetStatusCode()));
+                int status_code = http->GetStatusCode();
+                if (status_code != 200) {
+                    throw std::runtime_error("Unexpected status code: " + std::to_string(status_code));
                 }
 
                 size_t content_length = http->GetBodyLength();
                 char* data = (char*)heap_caps_malloc(content_length, MALLOC_CAP_8BIT);
+                if (data == nullptr) {
+                    throw std::runtime_error("Failed to allocate memory for image: " + url);
+                }
                 size_t total_read = 0;
                 while (total_read < content_length) {
                     int ret = http->Read(data + total_read, content_length - total_read);
@@ -286,24 +370,15 @@ void McpServer::AddUserOnlyTools() {
                         heap_caps_free(data);
                         throw std::runtime_error("Failed to download image: " + url);
                     }
+                    if (ret == 0) {
+                        break;
+                    }
                     total_read += ret;
                 }
                 http->Close();
 
-                auto img_dsc = (lv_img_dsc_t*)heap_caps_calloc(1, sizeof(lv_img_dsc_t), MALLOC_CAP_8BIT);
-                img_dsc->data_size = content_length;
-                img_dsc->data = (uint8_t*)data;
-                if (lv_image_decoder_get_info(img_dsc, &img_dsc->header) != LV_RESULT_OK) {
-                    heap_caps_free(data);
-                    heap_caps_free(img_dsc);
-                    throw std::runtime_error("Failed to get image info");
-                }
-                ESP_LOGI(TAG, "Preview image: %s size: %d resolution: %d x %d", url.c_str(), content_length, img_dsc->header.w, img_dsc->header.h);
-
-                auto& app = Application::GetInstance();
-                app.Schedule([display, img_dsc]() {
-                    display->SetPreviewImage(img_dsc);
-                });
+                auto image = std::make_unique<LvglAllocatedImage>(data, content_length);
+                display->SetPreviewImage(std::move(image));
                 return true;
             });
     }
@@ -325,6 +400,206 @@ void McpServer::AddUserOnlyTools() {
                 });
         }
     }
+
+    // 日程管理工具
+    auto &schedule_manager = ScheduleManager::GetInstance();
+
+    AddTool("self.schedule.create_event",
+        "Create a new schedule event. Support intelligent classification and reminder functions.\n"
+        "parameter:\n"
+        "  `title`: Event title (required)\n"
+        "  `description`: Event description (optional)\n"
+        "  `start_time`: Start timestamp (required)\n"
+        "  `end_time`: End timestamp (optional, 0 means no end time)\n"
+        "  `category`: Event category (optional, if not provided, it will be automatically classified)\n"
+        "  `is_all_day`: Whether it is an all-day event (optional, default false)\n"
+        "  `reminder_minutes`: Reminder time (optional, default 15 minutes)\n"
+        "Return:\n"
+        "  Event ID string, used for subsequent operations",
+        PropertyList({Property("title", kPropertyTypeString),
+            Property("description", kPropertyTypeString, ""),
+            Property("start_time", kPropertyTypeInteger),
+            Property("end_time", kPropertyTypeInteger, 0),
+            Property("category", kPropertyTypeString, ""),
+            Property("is_all_day", kPropertyTypeBoolean, false),
+            Property("reminder_minutes", kPropertyTypeInteger, 15, 0, 1440)}),
+        [&schedule_manager](const PropertyList &properties) -> ReturnValue {
+            auto title = properties["title"].value<std::string>();
+            auto description = properties["description"].value<std::string>();
+            time_t start_time = properties["start_time"].value<int>();
+            time_t end_time = properties["end_time"].value<int>();
+            auto category = properties["category"].value<std::string>();
+            bool is_all_day = properties["is_all_day"].value<bool>();
+            int reminder_minutes = properties["reminder_minutes"].value<int>();
+
+            std::string event_id = schedule_manager.CreateEvent(title, description, start_time, end_time,category, is_all_day, reminder_minutes);
+
+            if (event_id.empty())
+            {
+                return "{\"success\": false, \"message\": \"Event creation failed\"}";
+            }
+
+            return "{\"success\": true, \"event_id\": \"" + event_id + "\", \"message\": \"Event created successfully\"}";
+        });
+
+    AddTool("self.schedule.get_events",
+        "Get all schedule events.\n"
+        "Return:\n"
+        "  JSON array of event objects",
+        PropertyList(),
+        [&schedule_manager](const PropertyList &properties) -> ReturnValue {
+            std::string json_str = schedule_manager.ExportToJson();
+            return json_str;
+        });
+
+    AddTool("self.schedule.delete_event",
+        "Delete a schedule event.\n"
+        "Parameter:\n"
+        "  `event_id`: ID of the event to delete (required)\n"
+        "Return:\n"
+        "  Operation result",
+        PropertyList({Property("event_id", kPropertyTypeString)}),
+        [&schedule_manager](const PropertyList &properties) -> ReturnValue {
+            auto event_id = properties["event_id"].value<std::string>();
+
+            bool success = schedule_manager.DeleteEvent(event_id);
+
+            if (success) {
+                return "{\"success\": true, \"message\": \"Event deleted successfully\"}";
+            } else {
+                return "{\"success\": false, \"message\": \"Event deletion failed\"}";
+            }
+        });
+
+    AddTool("self.schedule.get_statistics",
+        "Obtain schedule statistics information.\n"
+        "Return:\n"
+        "  JSON object of statistics information",
+        PropertyList(),
+        [&schedule_manager](const PropertyList &properties) -> ReturnValue {
+            int total_events = schedule_manager.GetEventCount();
+
+            cJSON *json = cJSON_CreateObject();
+            cJSON_AddNumberToObject(json, "total_events", total_events);
+            cJSON_AddBoolToObject(json, "success", true);
+
+            return json;
+        });
+    
+    // 定时任务工具
+    auto &timer_manager = TimerManager::GetInstance();
+
+    AddTool("self.timer.create_countdown",
+        "Create a countdown timer.\n"
+        "Return:\n"
+        "  `name`: Timer name (required)\n"
+        "  `duration_ms`: Duration in milliseconds (required)\n"
+        "  `description`: Description (optional)\n"
+        "Return:\n"
+        "  Timer ID",
+        PropertyList({Property("name", kPropertyTypeString),
+            Property("duration_ms", kPropertyTypeInteger, 1000, 100, 3600000),
+            Property("description", kPropertyTypeString, "")}),
+        [&timer_manager](const PropertyList &properties) -> ReturnValue {
+            auto name = properties["name"].value<std::string>();
+            uint32_t duration_ms = properties["duration_ms"].value<int>();
+            auto description = properties["description"].value<std::string>();
+
+            std::string timer_id = timer_manager.CreateCountdownTimer(name, duration_ms, description);
+
+            return "{\"success\": true, \"timer_id\": \"" + timer_id + "\", \"message\": \"Countdown timer successfully created\"}";
+        });
+
+        AddTool("self.timer.create_delayed_task",
+            "Create a task for delaying the execution of MCP tools.\n"
+            "Parameter:\n"
+            "  `name`: Task name (required)\n"
+            "  `delay_ms`: Delay time in milliseconds (required)\n"
+            "  `mcp_tool_name`: MCP tool name (required)\n"
+            "  `mcp_tool_args`: MCP tool arguments (optional)\n"
+            "  `description`: Description (optional)\n"
+            "Return:\n"
+            "  Task ID",
+            PropertyList({Property("name", kPropertyTypeString),
+                          Property("delay_ms", kPropertyTypeInteger, 1000, 100, 3600000),
+                          Property("mcp_tool_name", kPropertyTypeString),
+                          Property("mcp_tool_args", kPropertyTypeString, ""),
+                          Property("description", kPropertyTypeString, "")}),
+            [&timer_manager](const PropertyList &properties) -> ReturnValue
+            {
+                auto name = properties["name"].value<std::string>();
+                uint32_t delay_ms = properties["delay_ms"].value<int>();
+                auto mcp_tool_name = properties["mcp_tool_name"].value<std::string>();
+                auto mcp_tool_args = properties["mcp_tool_args"].value<std::string>();
+                auto description = properties["description"].value<std::string>();
+
+                std::string task_id = timer_manager.CreateDelayedMcpTask(
+                    name, delay_ms, mcp_tool_name, mcp_tool_args, description);
+
+                return "{\"success\": true, \"task_id\": \"" + task_id + "\", \"message\": \"Delay task created successfully\"}";
+            });
+
+        AddTool("self.timer.start_task",
+            "Start scheduled tasks.\n"
+            "Parameter:\n"
+            "  `task_id`: Task ID (required)\n"
+            "Return:\n"
+            "  Operation result",
+            PropertyList({Property("task_id", kPropertyTypeString)}),
+            [&timer_manager](const PropertyList &properties) -> ReturnValue {
+                auto task_id = properties["task_id"].value<std::string>();
+
+                bool success = timer_manager.StartTask(task_id);
+
+                if (success) {
+                    return "{\"success\": true, \"message\": \"Task started successfully\"}";
+                } else {
+                    return "{\"success\": false, \"message\": \"Task start failed\"}";
+                }
+            });
+
+        AddTool("self.timer.stop_task",
+            "Stop scheduled tasks.\n"
+            "Parameter:\n"
+            "  `task_id`: Task ID (Required)\n"
+            "Return:\n"
+            "  Operation result",
+            PropertyList({Property("task_id", kPropertyTypeString)}),
+            [&timer_manager](const PropertyList &properties) -> ReturnValue {
+                auto task_id = properties["task_id"].value<std::string>();
+
+                bool success = timer_manager.StopTask(task_id);
+
+                if (success) {
+                    return "{\"success\": true, \"message\": \"Task stopped successfully\"}";
+                } else {
+                    return "{\"success\": false, \"message\": \"Task stop failed\"}";
+                }
+            });
+        AddTool("self.timer.get_tasks",
+            "Get all scheduled tasks.\n"
+            "Return:\n"
+            "  JSON array of task objects",
+            PropertyList(),
+            [&timer_manager](const PropertyList &properties) -> ReturnValue {
+                std::string json_str = timer_manager.ExportToJson();
+                return json_str;
+            });
+
+        AddTool("self.timer.get_statistics",
+            "Obtain timer statistics information.\n"
+            "Return:\n"
+            "  JSON object of statistics information",
+            PropertyList(),
+            [&timer_manager](const PropertyList &properties) -> ReturnValue {
+                int total_tasks = timer_manager.GetTaskCount();
+
+                cJSON *json = cJSON_CreateObject();
+                cJSON_AddNumberToObject(json, "total_tasks", total_tasks);
+                cJSON_AddBoolToObject(json, "success", true);
+
+                return json;
+            });
 }
 
 void McpServer::AddTool(McpTool* tool) {
@@ -455,13 +730,7 @@ void McpServer::ParseMessage(const cJSON* json) {
             ReplyError(id_int, "Invalid arguments");
             return;
         }
-        auto stack_size = cJSON_GetObjectItem(params, "stackSize");
-        if (stack_size != nullptr && !cJSON_IsNumber(stack_size)) {
-            ESP_LOGE(TAG, "tools/call: Invalid stackSize");
-            ReplyError(id_int, "Invalid stackSize");
-            return;
-        }
-        DoToolCall(id_int, std::string(tool_name->valuestring), tool_arguments, stack_size ? stack_size->valueint : DEFAULT_TOOLCALL_STACK_SIZE);
+        DoToolCall(id_int, std::string(tool_name->valuestring), tool_arguments);
     } else {
         ESP_LOGE(TAG, "Method not implemented: %s", method_str.c_str());
         ReplyError(id_int, "Method not implemented: " + method_str);
@@ -541,7 +810,7 @@ void McpServer::GetToolsList(int id, const std::string& cursor, bool list_user_o
     ReplyResult(id, json);
 }
 
-void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* tool_arguments, int stack_size) {
+void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* tool_arguments) {
     auto tool_iter = std::find_if(tools_.begin(), tools_.end(), 
                                  [&tool_name](const McpTool* tool) { 
                                      return tool->name() == tool_name; 
@@ -583,15 +852,9 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
         return;
     }
 
-    // Start a task to receive data with stack size
-    esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
-    cfg.thread_name = "tool_call";
-    cfg.stack_size = stack_size;
-    cfg.prio = 1;
-    esp_pthread_set_cfg(&cfg);
-
-    // Use a thread to call the tool to avoid blocking the main thread
-    tool_call_thread_ = std::thread([this, id, tool_iter, arguments = std::move(arguments)]() {
+    // Use main thread to call the tool
+    auto& app = Application::GetInstance();
+    app.Schedule([this, id, tool_iter, arguments = std::move(arguments)]() {
         try {
             ReplyResult(id, (*tool_iter)->Call(arguments));
         } catch (const std::exception& e) {
@@ -599,5 +862,4 @@ void McpServer::DoToolCall(int id, const std::string& tool_name, const cJSON* to
             ReplyError(id, e.what());
         }
     });
-    tool_call_thread_.detach();
 }
