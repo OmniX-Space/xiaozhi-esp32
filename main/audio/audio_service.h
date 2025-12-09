@@ -94,6 +94,7 @@ public:
     bool IsIdle();
     bool IsWakeWordRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_WAKE_WORD_RUNNING; }
     bool IsAudioProcessorRunning() const { return xEventGroupGetBits(event_group_) & AS_EVENT_AUDIO_PROCESSOR_RUNNING; }
+    bool IsAfeWakeWord();
 
     void EnableWakeWordDetection(bool enable);
     void EnableVoiceProcessing(bool enable);
@@ -109,6 +110,7 @@ public:
     void ResetDecoder();
     void SetModelsList(srmodel_list_t* models_list);
     void UpdateOutputTimestamp();
+
 private:
     AudioCodec* codec_ = nullptr;
     AudioServiceCallbacks callbacks_;

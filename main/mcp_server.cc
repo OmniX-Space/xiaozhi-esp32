@@ -14,14 +14,11 @@
 #include "display.h"
 #include "oled_display.h"
 #include "board.h"
-#include "boards/common/esp32_music.h"
 #include "settings.h"
 #include "lvgl_theme.h"
 #include "lvgl_display.h"
-
-#include "schedule_manager.h"
-#include "timer_manager.h"
-
+#include "boards/common/esp32_music.h"
+#include "device_manager.h"
 #define TAG "MCP"
 
 McpServer::McpServer() {
@@ -123,100 +120,572 @@ void McpServer::AddCommonTools() {
                 return camera->Explain(question);
             });
     }
-#endif
-auto music = board.GetMusic();
-    if (music) {
+    auto music = board.GetMusic();
+    if (music)
+    {
         AddTool("self.music.play_song",
-            "Play the specified song. When users request to play music, this tool will automatically retrieve song details and start streaming.\n"
-            "parameter:\n"
-            "  `song_name`: The name of the song to be played.\n"
-            "return:\n"
-            "  Play status information without confirmation, immediately play the song.",
-            PropertyList({Property("song_name", kPropertyTypeString)}),
-            [music](const PropertyList &properties) -> ReturnValue {
-                auto song_name = properties["song_name"].value<std::string>();
-                if (!music->Download(song_name)) {
-                    return "{\"success\": false, \"message\": \"Failed to obtain music resources\"}";
-                }
-                auto download_result = music->GetDownloadResult();
-                ESP_LOGD(TAG, "Music details result: %s", download_result.c_str());
-                return true;
-            });
+                "Play the specified song. When users request to play music, this tool will automatically retrieve song details and start streaming.\n"
+                "parameters:\n"
+                "  `song_name`: The name of the song to be played.\n"
+                "  `artist`: (Optional) The artist name. Highly recommended when playing from playlists to ensure correct song match.\n"
+                "return:\n"
+                "  Play status information without confirmation, immediately play the song.",
+                PropertyList({
+                    Property("song_name", kPropertyTypeString),
+                    Property("artist", kPropertyTypeString, "")
+                }),
+                [music](const PropertyList &properties) -> ReturnValue
+                {
+                    auto song_name = properties["song_name"].value<std::string>();
+                    auto artist = properties["artist"].value<std::string>();
+                    
+                    // 分别传递歌名和艺术家，不拼接
+                    if (!music->Download(song_name, artist))
+                    {
+                        return "{\"success\": false, \"message\": \"Failed to obtain music resources\"}";
+                    }
+                    auto download_result = music->GetDownloadResult();
+                    ESP_LOGD(TAG, "Music details result: %s", download_result.c_str());
+                    return true;
+                });
 
-        AddTool("self.music.set_volume",
-            "Set music volume (0-100).",
-            PropertyList({Property("volume", kPropertyTypeInteger, 0, 100)}),
-            [music](const PropertyList &properties) -> ReturnValue {
-                int vol = properties["volume"].value<int>();
-                bool ok = music->SetVolume(vol);
-                return ok;
-            });
-
-        AddTool("self.music.play",
-            "Play current music.",
-            PropertyList(),
-            [music](const PropertyList &properties) -> ReturnValue {
-                bool ok = music->PlaySong();
-                return ok;
-            });
-
-        // 兼容更明确的命名：stop_song / pause_song / resume_song
-        AddTool("self.music.stop_song",
-            "Stop current song.",
-            PropertyList(),
-            [music](const PropertyList &properties) -> ReturnValue {
-                bool ok = music->StopSong();
-                return ok;
-            });
-
-        AddTool("self.music.pause_song",
-            "Pause current song.",
-            PropertyList(),
-            [music](const PropertyList &properties) -> ReturnValue {
-                bool ok = music->PauseSong();
-                return ok;
-            });
-
-        AddTool("self.music.resume_song",
-            "Resume current song.",
-            PropertyList(),
-            [music](const PropertyList &properties) -> ReturnValue {
-                bool ok = music->ResumeSong();
-                return ok;
-            });
-
-        AddTool("self.music.set_display_mode",
-            "Set the display mode for music playback. You can choose to display the spectrum or lyrics, for example, if the user says' open spectrum 'or' display spectrum ', the corresponding display mode will be set for' open lyrics' or 'display lyrics'.\n"
-            "parameter:\n"
-            "  `mode`: Display mode, with optional values of 'spectrum' or 'lyrics'.\n"
-            "return:\n"
-            "  Set result information.",
-            PropertyList({
-                Property("mode", kPropertyTypeString) // Display mode: "spectrum" or "lyrics"
-            }),
-            [music](const PropertyList &properties) -> ReturnValue {
-                auto mode_str = properties["mode"].value<std::string>();
-
-                // Convert to lowercase for comparison
-                std::transform(mode_str.begin(), mode_str.end(), mode_str.begin(), ::tolower);
-
-                if (mode_str == "spectrum" || mode_str == "频谱") {
-                    // Set to spectrum display mode
-                    auto esp32_music = static_cast<Esp32Music *>(music);
-                        esp32_music->SetDisplayMode(Esp32Music::DISPLAY_MODE_SPECTRUM);
-                    return "{\"success\": true, \"message\": \"Switched to spectrum display mode\"}";
-                } else if (mode_str == "lyrics" || mode_str == "歌词") {
-                    // Set to lyrics display mode
-                    auto esp32_music = static_cast<Esp32Music *>(music);
-                    esp32_music->SetDisplayMode(Esp32Music::DISPLAY_MODE_LYRICS);
-                    return "{\"success\": true, \"message\": \"Switched to lyrics display mode\"}";
-                } else {
-                    return "{\"success\": false, \"message\": \"Invalid display mode, please use 'spectrum' or 'lyrics'\"}";
-                }
-
-                return "{\"success\": false, \"message\": \"Failed to set display mode\"}";
-            });
     }
+    
+    // Device binding tools
+    AddTool("self.device.bind",
+        "Bind this ESP32 device to a user account using a 6-digit binding code.\n"
+        "Users need to:\n"
+        "1. Login to the web console (http://47.118.17.234:2233)\n"
+        "2. Generate a binding code (valid for 5 minutes)\n"
+        "3. Tell the device: '绑定设备，绑定码123456'\n"
+        "Parameters:\n"
+        "  `binding_code`: 6-digit binding code from web console\n"
+        "  `device_name`: Optional custom device name (default: ESP32音乐播放器)\n"
+        "Returns:\n"
+        "  Success message with bound username, or error message.",
+        PropertyList({
+            Property("binding_code", kPropertyTypeString),
+            Property("device_name", kPropertyTypeString, "")
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& device_manager = DeviceManager::GetInstance();
+            
+            std::string binding_code = properties["binding_code"].value<std::string>();
+            std::string device_name = properties["device_name"].value<std::string>();
+            
+            if (binding_code.empty()) {
+                return "错误：绑定码不能为空";
+            }
+            
+            if (binding_code.length() != 6) {
+                return "错误：绑定码必须是6位数字";
+            }
+            
+            // Check if device is already bound
+            if (device_manager.IsDeviceBound()) {
+                std::string username = device_manager.GetBoundUsername();
+                return "设备已绑定到用户: " + username + "\n如需重新绑定，请先解绑。";
+            }
+            
+            // Attempt to bind
+            bool success = device_manager.BindDevice(binding_code, device_name);
+            
+            if (success) {
+                std::string username = device_manager.GetBoundUsername();
+                return "✅ 设备绑定成功！\n已绑定到用户: " + username;
+            } else {
+                return "❌ 绑定失败！请检查：\n"
+                       "1. 绑定码是否正确\n"
+                       "2. 绑定码是否已过期（有效期5分钟）\n"
+                       "3. 网络连接是否正常";
+            }
+        });
+
+    AddTool("self.device.unbind",
+        "Unbind this device from the current user account.\n"
+        "This will remove the device binding and require re-binding to use personalized features.\n"
+        "Returns:\n"
+        "  Success or error message.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& device_manager = DeviceManager::GetInstance();
+            
+            if (!device_manager.IsDeviceBound()) {
+                return "设备未绑定，无需解绑";
+            }
+            
+            std::string username = device_manager.GetBoundUsername();
+            bool success = device_manager.ClearDeviceToken();
+            
+            if (success) {
+                return "✅ 设备已解绑\n之前绑定的用户: " + username;
+            } else {
+                return "❌ 解绑失败，请稍后重试";
+            }
+        });
+
+    AddTool("self.device.status",
+        "Get the current device binding status and information.\n"
+        "Returns:\n"
+        "  Device binding status, MAC address, bound username, etc.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& device_manager = DeviceManager::GetInstance();
+            
+            std::string result = "📱 设备信息:\n\n";
+            result += "MAC地址: " + device_manager.GetMACAddress() + "\n";
+            
+            if (device_manager.IsDeviceBound()) {
+                result += "绑定状态: ✅ 已绑定\n";
+                result += "绑定用户: " + device_manager.GetBoundUsername() + "\n";
+                
+                // Try to verify with server
+                bool verified = device_manager.VerifyDevice();
+                result += "服务器验证: " + std::string(verified ? "✅ 通过" : "❌ 失败") + "\n";
+            } else {
+                result += "绑定状态: ❌ 未绑定\n";
+                result += "\n💡 提示: 使用 '绑定设备' 功能来绑定账号";
+            }
+            
+            return result;
+        });
+
+    // 歌单相关工具
+    AddTool("self.music.favorite_list",
+        "获取我的'我喜欢'歌单中的歌曲列表。\n"
+        "Returns:\n"
+        "  歌曲列表JSON数组，每首歌包含：\n"
+        "  - title: 歌曲名\n"
+        "  - artist: 艺术家名\n"
+        "  - duration: 时长\n"
+        "  **播放选项**:\n"
+        "  1. 播放单首歌：使用 play_song 工具，同时传递 song_name 和 artist 参数\n"
+        "  2. 播放整个歌单：使用 play_playlist 工具，传递完整的歌曲JSON数组",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& device_manager = DeviceManager::GetInstance();
+            if (!device_manager.IsDeviceBound()) {
+                return "错误：设备未绑定，请先绑定账号";
+            }
+            
+            std::string result = device_manager.GetFavorites();
+            if (result.empty()) {
+                return "获取歌单失败或歌单为空";
+            }
+            return result;
+        });
+
+    AddTool("self.music.my_playlists",
+        "获取我创建的歌单列表。\n"
+        "Returns:\n"
+        "  歌单列表JSON数组，每个歌单包含 songs 数组，每首歌包含：\n"
+        "  - title: 歌曲名\n"
+        "  - artist: 艺术家名\n"
+        "  - duration: 时长\n"
+        "  **重要**: 播放歌单中的歌曲时，请同时传递 song_name 和 artist 参数给 play_song 工具。",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto& device_manager = DeviceManager::GetInstance();
+            if (!device_manager.IsDeviceBound()) {
+                return "错误：设备未绑定，请先绑定账号";
+            }
+            
+            std::string result = device_manager.GetUserPlaylists();
+            if (result.empty()) {
+                return "获取歌单失败或没有歌单";
+            }
+            return result;
+        });
+
+    // 播放整个歌单工具
+    AddTool("self.music.play_playlist",
+        "播放整个歌单，连续播放歌单中的所有歌曲。\n"
+        "parameters:\n"
+        "  `songs`: JSON格式的歌曲数组，每首歌必须包含 title 和 artist 字段\n"
+        "return:\n"
+        "  开始播放歌单的状态信息",
+        PropertyList({
+            Property("songs", kPropertyTypeString)
+        }),
+        [music](const PropertyList &properties) -> ReturnValue
+        {
+            auto songs_json = properties["songs"].value<std::string>();
+            
+            // 解析歌曲JSON数组
+            cJSON* json = cJSON_Parse(songs_json.c_str());
+            if (!json || !cJSON_IsArray(json)) {
+                if (json) cJSON_Delete(json);
+                return "{\"success\": false, \"message\": \"Invalid songs JSON format\"}";
+            }
+            
+            std::vector<SongInfo> playlist;
+            int array_size = cJSON_GetArraySize(json);
+            
+            for (int i = 0; i < array_size; i++) {
+                cJSON* song_item = cJSON_GetArrayItem(json, i);
+                if (!song_item) continue;
+                
+                cJSON* title = cJSON_GetObjectItem(song_item, "title");
+                cJSON* artist = cJSON_GetObjectItem(song_item, "artist");
+                
+                if (cJSON_IsString(title) && cJSON_IsString(artist)) {
+                    playlist.emplace_back(title->valuestring, artist->valuestring);
+                }
+            }
+            
+            cJSON_Delete(json);
+            
+            if (playlist.empty()) {
+                return "{\"success\": false, \"message\": \"No valid songs found in playlist\"}";
+            }
+            
+            // 开始播放歌单
+            if (music->PlayPlaylist(playlist)) {
+                return "{\"success\": true, \"message\": \"Started playing playlist with " + 
+                       std::to_string(playlist.size()) + " songs\"}";
+            } else {
+                return "{\"success\": false, \"message\": \"Failed to start playlist\"}";
+            }
+        });
+
+    // 播放队列控制工具
+    AddTool("self.music.next_song",
+        "播放下一首歌曲（仅在播放歌单时有效）。\n"
+        "return:\n"
+        "  切换到下一首歌的状态信息",
+        PropertyList(),
+        [music](const PropertyList &properties) -> ReturnValue
+        {
+            if (!music->IsPlaylistMode()) {
+                return "{\"success\": false, \"message\": \"Not in playlist mode\"}";
+            }
+            
+            if (music->NextSong()) {
+                return "{\"success\": true, \"message\": \"Switched to next song\"}";
+            } else {
+                return "{\"success\": false, \"message\": \"Already at last song or playlist ended\"}";
+            }
+        });
+
+    AddTool("self.music.previous_song",
+        "播放上一首歌曲（仅在播放歌单时有效）。\n"
+        "return:\n"
+        "  切换到上一首歌的状态信息",
+        PropertyList(),
+        [music](const PropertyList &properties) -> ReturnValue
+        {
+            if (!music->IsPlaylistMode()) {
+                return "{\"success\": false, \"message\": \"Not in playlist mode\"}";
+            }
+            
+            if (music->PreviousSong()) {
+                return "{\"success\": true, \"message\": \"Switched to previous song\"}";
+            } else {
+                return "{\"success\": false, \"message\": \"Already at first song\"}";
+            }
+        });
+
+    AddTool("self.music.stop_playlist",
+        "停止播放歌单。\n"
+        "return:\n"
+        "  停止播放歌单的状态信息",
+        PropertyList(),
+        [music](const PropertyList &properties) -> ReturnValue
+        {
+            music->StopPlaylist();
+            return "{\"success\": true, \"message\": \"Playlist stopped\"}";
+        });
+    
+    // 闹钟功能工具
+    AddTool("self.alarm.add",
+        "Set a new alarm with music playback. When users request to set an alarm, this tool will create the alarm with specified parameters.\n"
+        "🎵 Music Feature: If no specific music is provided, the system will randomly select from 40+ popular songs including Chinese pop, classics, and international hits.\n"
+        "Parameters:\n"
+        "  `hour`: Hour of the alarm (0-23)\n"
+        "  `minute`: Minute of the alarm (0-59)\n"
+        "  `repeat_mode`: Repeat mode (0=once, 1=daily, 2=weekdays, 3=weekends)\n"
+        "  `label`: Optional label/description for the alarm\n"
+        "  `music_name`: Optional specific music to play (leave empty for random selection)\n"
+        "Returns:\n"
+        "  Alarm ID if successful, error message if failed.",
+        PropertyList({
+            Property("hour", kPropertyTypeInteger, 0, 23),
+            Property("minute", kPropertyTypeInteger, 0, 59),
+            Property("repeat_mode", kPropertyTypeInteger, 0, 0, 3),
+            Property("label", kPropertyTypeString, ""),
+            Property("music_name", kPropertyTypeString, "")
+        }),
+        [this](const PropertyList& properties) -> ReturnValue {
+            auto& alarm_manager = AlarmManager::GetInstance();
+            
+            int hour = properties["hour"].value<int>();
+            int minute = properties["minute"].value<int>();
+            AlarmRepeatMode repeat_mode = (AlarmRepeatMode)properties["repeat_mode"].value<int>();
+            std::string label = properties["label"].value<std::string>();
+            std::string music_name = properties["music_name"].value<std::string>();
+            
+            int alarm_id = alarm_manager.AddAlarm(hour, minute, repeat_mode, label, music_name);
+            
+            if (alarm_id > 0) {
+                std::string result = "已设置闹钟: " + AlarmManager::FormatTime(hour, minute);
+                if (!label.empty()) {
+                    result += " - " + label;
+                }
+                if (!music_name.empty()) {
+                    result += " (音乐: " + music_name + ")";
+                }
+                
+                // 显示重复模式
+                switch (repeat_mode) {
+                    case kAlarmOnce: result += " (一次性)"; break;
+                    case kAlarmDaily: result += " (每日)"; break;
+                    case kAlarmWeekdays: result += " (工作日)"; break;
+                    case kAlarmWeekends: result += " (周末)"; break;
+                    case kAlarmCustom: result += " (自定义)"; break;
+                }
+                
+                return result;
+            } else {
+                return "设置闹钟失败，请检查时间格式";
+            }
+        });
+
+    AddTool("self.alarm.list",
+        "List all alarms and show their status.\n"
+        "Returns:\n"
+        "  List of all alarms with their details.",
+        PropertyList(),
+        [this](const PropertyList& properties) -> ReturnValue {
+            auto& alarm_manager = AlarmManager::GetInstance();
+            auto alarms = alarm_manager.GetAllAlarms();
+            
+            if (alarms.empty()) {
+                return "没有设置任何闹钟";
+            }
+            
+            std::string result = "闹钟列表:\n";
+            for (const auto& alarm : alarms) {
+                result += "ID " + std::to_string(alarm.id) + ": ";
+                result += AlarmManager::FormatAlarmTime(alarm);
+                
+                if (!alarm.label.empty()) {
+                    result += " - " + alarm.label;
+                }
+                
+                switch (alarm.status) {
+                    case kAlarmEnabled: result += " [启用]"; break;
+                    case kAlarmDisabled: result += " [禁用]"; break;
+                    case kAlarmTriggered: result += " [正在响铃]"; break;
+                    case kAlarmSnoozed: result += " [贪睡中]"; break;
+                }
+                
+                if (!alarm.music_name.empty()) {
+                    result += " (音乐: " + alarm.music_name + ")";
+                }
+                result += "\n";
+            }
+            
+            result += "\n" + alarm_manager.GetNextAlarmInfo();
+            return result;
+        });
+
+    AddTool("self.alarm.remove",
+        "Remove/delete an alarm by ID.\n"
+        "Parameters:\n"
+        "  `alarm_id`: ID of the alarm to remove\n"
+        "Returns:\n"
+        "  Success or error message.",
+        PropertyList({
+            Property("alarm_id", kPropertyTypeInteger)
+        }),
+        [this](const PropertyList& properties) -> ReturnValue {
+            auto& alarm_manager = AlarmManager::GetInstance();
+            int alarm_id = properties["alarm_id"].value<int>();
+            
+            if (alarm_manager.RemoveAlarm(alarm_id)) {
+                return "已删除闹钟 ID " + std::to_string(alarm_id);
+            } else {
+                return "未找到闹钟 ID " + std::to_string(alarm_id);
+            }
+        });
+
+    AddTool("self.alarm.toggle",
+        "Enable or disable an alarm by ID.\n"
+        "Parameters:\n"
+        "  `alarm_id`: ID of the alarm to toggle\n"
+        "  `enabled`: True to enable, false to disable\n"
+        "Returns:\n"
+        "  Success or error message.",
+        PropertyList({
+            Property("alarm_id", kPropertyTypeInteger),
+            Property("enabled", kPropertyTypeBoolean, true)
+        }),
+        [this](const PropertyList& properties) -> ReturnValue {
+            auto& alarm_manager = AlarmManager::GetInstance();
+            int alarm_id = properties["alarm_id"].value<int>();
+            bool enabled = properties["enabled"].value<bool>();
+            
+            if (alarm_manager.EnableAlarm(alarm_id, enabled)) {
+                return "闹钟 ID " + std::to_string(alarm_id) + (enabled ? " 已启用" : " 已禁用");
+            } else {
+                return "未找到闹钟 ID " + std::to_string(alarm_id);
+            }
+        });
+
+    AddTool("self.alarm.snooze",
+        "Snooze the currently active alarm.\n"
+        "Parameters:\n"
+        "  `alarm_id`: ID of the alarm to snooze (optional, will snooze first active alarm if not specified)\n"
+        "Returns:\n"
+        "  Success or error message.",
+        PropertyList({
+            Property("alarm_id", kPropertyTypeInteger, -1)
+        }),
+        [this](const PropertyList& properties) -> ReturnValue {
+            auto& alarm_manager = AlarmManager::GetInstance();
+            int alarm_id = properties["alarm_id"].value<int>();
+            
+            if (alarm_id == -1) {
+                // 贪睡第一个活动的闹钟
+                auto active_alarms = alarm_manager.GetActiveAlarms();
+                if (!active_alarms.empty()) {
+                    alarm_id = active_alarms[0].id;
+                } else {
+                    return "没有正在响铃的闹钟";
+                }
+            }
+            
+            if (alarm_manager.SnoozeAlarm(alarm_id)) {
+                return "闹钟已贪睡5分钟";
+            } else {
+                return "无法贪睡闹钟，可能已达到最大贪睡次数";
+            }
+        });
+
+    AddTool("self.alarm.stop",
+        "Stop the currently active alarm.\n"
+        "Parameters:\n"
+        "  `alarm_id`: ID of the alarm to stop (optional, will stop first active alarm if not specified)\n"
+        "Returns:\n"
+        "  Success or error message.",
+        PropertyList({
+            Property("alarm_id", kPropertyTypeInteger, -1)
+        }),
+        [this](const PropertyList& properties) -> ReturnValue {
+            auto& alarm_manager = AlarmManager::GetInstance();
+            int alarm_id = properties["alarm_id"].value<int>();
+            
+            if (alarm_id == -1) {
+                // 停止第一个活动的闹钟
+                auto active_alarms = alarm_manager.GetActiveAlarms();
+                if (!active_alarms.empty()) {
+                    alarm_id = active_alarms[0].id;
+                } else {
+                    return "没有正在响铃的闹钟";
+                }
+            }
+            
+            if (alarm_manager.StopAlarm(alarm_id)) {
+                return "闹钟已关闭";
+            } else {
+                return "未找到活动的闹钟";
+            }
+        });
+
+    AddTool("self.alarm.music_list",
+        "Show the list of default alarm music. Users can reference this list when setting custom alarm music.\n"
+        "Returns:\n"
+        "  List of available alarm music songs.",
+        PropertyList(),
+        [this](const PropertyList& properties) -> ReturnValue {
+            auto& app = Application::GetInstance();
+            auto music_list = app.GetDefaultAlarmMusicList();
+            
+            if (music_list.empty()) {
+                return "暂无可用的闹钟音乐";
+            }
+            
+            std::string result = "🎵 可用的闹钟音乐列表:\n\n";
+            result += "📝 使用说明: 设置闹钟时可以指定以下任意一首歌曲作为闹钟铃声\n";
+            result += "🎲 如果不指定音乐，系统会随机播放其中一首\n\n";
+            
+            // 分类显示音乐
+            result += "🇨🇳 中文流行:\n";
+            std::vector<std::string> chinese_songs = {
+                "晴天", "七里香", "青花瓷", "稻香", "彩虹", "告白气球", "说好不哭",
+                "夜曲", "花海", "简单爱", "听妈妈的话", "东风破", "菊花台",
+                "起风了", "红豆", "好久不见", "匆匆那年", "老男孩", "那些年",
+                "小幸运", "成都", "南山南", "演员", "体面", "盗将行", "大鱼"
+            };
+            
+            for (size_t i = 0; i < chinese_songs.size() && i < 15; i++) {
+                result += "  • " + chinese_songs[i] + "\n";
+            }
+            
+            result += "\n🎼 经典怀旧:\n";
+            std::vector<std::string> classic_songs = {
+                "新不了情", "月亮代表我的心", "甜蜜蜜", "我只在乎你",
+                "友谊之光", "童年", "海阔天空", "光辉岁月", "真的爱你", "喜欢你"
+            };
+            
+            for (const auto& song : classic_songs) {
+                result += "  • " + song + "\n";
+            }
+            
+            result += "\n🌍 国际流行:\n";
+            std::vector<std::string> international_songs = {
+                "closer", "sugar", "shape of you", "despacito", 
+                "perfect", "happier", "someone like you"
+            };
+            
+            for (const auto& song : international_songs) {
+                result += "  • " + song + "\n";
+            }
+            
+            result += "\n💡 示例: \"明天早上7点播放青花瓷叫我起床\"";
+            return result;
+        });
+
+    AddTool("self.alarm.test_music_ui",
+        "Test the new vinyl record music UI interface. This tool will simulate a music playback to showcase the new rotating vinyl record interface.\n"
+        "Parameters:\n"
+        "  `song_name`: Name of the song to display (optional)\n"
+        "  `duration`: Test duration in seconds (default 10 seconds)\n"
+        "Returns:\n"
+        "  Status message about the UI test.",
+        PropertyList({
+            Property("song_name", kPropertyTypeString, "晴天"),
+            Property("duration", kPropertyTypeInteger, 10, 5, 60)
+        }),
+        [this](const PropertyList& properties) -> ReturnValue {
+            auto& board = Board::GetInstance();
+            auto display = board.GetDisplay();
+            
+            if (!display) {
+                return "显示器不可用，无法测试音乐界面";
+            }
+            
+            std::string song_name = properties["song_name"].value<std::string>();
+            int duration = properties["duration"].value<int>();
+            
+            if (song_name.empty()) {
+                song_name = "UI测试 - 旋转唱片界面";
+            }
+            
+            // 显示音乐界面
+            display->SetMusicProgress(song_name.c_str(), 0, duration, 0.0f);
+            
+            return "🎵 已启动音乐界面测试！\n"
+                   "✨ 特色功能展示:\n"
+                   "  🎵 旋转唱片 - 黑胶唱片持续旋转\n"
+                   "  📡 唱片臂 - 自动放下/收起动画\n" 
+                   "  📊 进度条 - 实时显示播放进度\n"
+                   "  ⏰ 时间显示 - 当前时间/总时长\n"
+                   "  🌊 音波装饰 - 动态音乐波形\n"
+                   "测试时长: " + std::to_string(duration) + " 秒\n"
+                   "歌曲: " + song_name;
+        });
+#endif
 
     // Restore the original tools list to the end of the tools list
     tools_.insert(tools_.end(), original_tools.begin(), original_tools.end());
@@ -285,6 +754,7 @@ void McpServer::AddUserOnlyTools() {
                 return json;
             });
 
+#if CONFIG_LV_USE_SNAPSHOT
         AddUserOnlyTool("self.screen.snapshot", "Snapshot the screen and upload it to a specific URL",
             PropertyList({
                 Property("url", kPropertyTypeString),
@@ -294,13 +764,12 @@ void McpServer::AddUserOnlyTools() {
                 auto url = properties["url"].value<std::string>();
                 auto quality = properties["quality"].value<int>();
 
-                uint8_t* jpeg_output_data = nullptr;
-                size_t jpeg_output_size = 0;
-                if (!display->SnapshotToJpeg(jpeg_output_data, jpeg_output_size, quality)) {
+                std::string jpeg_data;
+                if (!display->SnapshotToJpeg(jpeg_data, quality)) {
                     throw std::runtime_error("Failed to snapshot screen");
                 }
 
-                ESP_LOGI(TAG, "Upload snapshot %u bytes to %s", jpeg_output_size, url.c_str());
+                ESP_LOGI(TAG, "Upload snapshot %u bytes to %s", jpeg_data.size(), url.c_str());
                 
                 // 构造multipart/form-data请求体
                 std::string boundary = "----ESP32_SCREEN_SNAPSHOT_BOUNDARY";
@@ -308,7 +777,6 @@ void McpServer::AddUserOnlyTools() {
                 auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
                 http->SetHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
                 if (!http->Open("POST", url)) {
-                    free(jpeg_output_data);
                     throw std::runtime_error("Failed to open URL: " + url);
                 }
                 {
@@ -322,8 +790,7 @@ void McpServer::AddUserOnlyTools() {
                 }
 
                 // JPEG数据
-                http->Write((const char*)jpeg_output_data, jpeg_output_size);
-                free(jpeg_output_data);
+                http->Write((const char*)jpeg_data.data(), jpeg_data.size());
 
                 {
                     // multipart尾部
@@ -381,225 +848,24 @@ void McpServer::AddUserOnlyTools() {
                 display->SetPreviewImage(std::move(image));
                 return true;
             });
+#endif // CONFIG_LV_USE_SNAPSHOT
     }
-#endif
+#endif // HAVE_LVGL
 
     // Assets download url
-    auto assets = Board::GetInstance().GetAssets();
-    if (assets) {
-        if (assets->partition_valid()) {
-            AddUserOnlyTool("self.assets.set_download_url", "Set the download url for the assets",
-                PropertyList({
-                    Property("url", kPropertyTypeString)
-                }),
-                [assets](const PropertyList& properties) -> ReturnValue {
-                    auto url = properties["url"].value<std::string>();
-                    Settings settings("assets", true);
-                    settings.SetString("download_url", url);
-                    return true;
-                });
-        }
+    auto& assets = Assets::GetInstance();
+    if (assets.partition_valid()) {
+        AddUserOnlyTool("self.assets.set_download_url", "Set the download url for the assets",
+            PropertyList({
+                Property("url", kPropertyTypeString)
+            }),
+            [](const PropertyList& properties) -> ReturnValue {
+                auto url = properties["url"].value<std::string>();
+                Settings settings("assets", true);
+                settings.SetString("download_url", url);
+                return true;
+            });
     }
-
-    // 日程管理工具
-    auto &schedule_manager = ScheduleManager::GetInstance();
-
-    AddTool("self.schedule.create_event",
-        "Create a new schedule event. Support intelligent classification and reminder functions.\n"
-        "parameter:\n"
-        "  `title`: Event title (required)\n"
-        "  `description`: Event description (optional)\n"
-        "  `start_time`: Start timestamp (required)\n"
-        "  `end_time`: End timestamp (optional, 0 means no end time)\n"
-        "  `category`: Event category (optional, if not provided, it will be automatically classified)\n"
-        "  `is_all_day`: Whether it is an all-day event (optional, default false)\n"
-        "  `reminder_minutes`: Reminder time (optional, default 15 minutes)\n"
-        "Return:\n"
-        "  Event ID string, used for subsequent operations",
-        PropertyList({Property("title", kPropertyTypeString),
-            Property("description", kPropertyTypeString, ""),
-            Property("start_time", kPropertyTypeInteger),
-            Property("end_time", kPropertyTypeInteger, 0),
-            Property("category", kPropertyTypeString, ""),
-            Property("is_all_day", kPropertyTypeBoolean, false),
-            Property("reminder_minutes", kPropertyTypeInteger, 15, 0, 1440)}),
-        [&schedule_manager](const PropertyList &properties) -> ReturnValue {
-            auto title = properties["title"].value<std::string>();
-            auto description = properties["description"].value<std::string>();
-            time_t start_time = properties["start_time"].value<int>();
-            time_t end_time = properties["end_time"].value<int>();
-            auto category = properties["category"].value<std::string>();
-            bool is_all_day = properties["is_all_day"].value<bool>();
-            int reminder_minutes = properties["reminder_minutes"].value<int>();
-
-            std::string event_id = schedule_manager.CreateEvent(title, description, start_time, end_time,category, is_all_day, reminder_minutes);
-
-            if (event_id.empty())
-            {
-                return "{\"success\": false, \"message\": \"Event creation failed\"}";
-            }
-
-            return "{\"success\": true, \"event_id\": \"" + event_id + "\", \"message\": \"Event created successfully\"}";
-        });
-
-    AddTool("self.schedule.get_events",
-        "Get all schedule events.\n"
-        "Return:\n"
-        "  JSON array of event objects",
-        PropertyList(),
-        [&schedule_manager](const PropertyList &properties) -> ReturnValue {
-            std::string json_str = schedule_manager.ExportToJson();
-            return json_str;
-        });
-
-    AddTool("self.schedule.delete_event",
-        "Delete a schedule event.\n"
-        "Parameter:\n"
-        "  `event_id`: ID of the event to delete (required)\n"
-        "Return:\n"
-        "  Operation result",
-        PropertyList({Property("event_id", kPropertyTypeString)}),
-        [&schedule_manager](const PropertyList &properties) -> ReturnValue {
-            auto event_id = properties["event_id"].value<std::string>();
-
-            bool success = schedule_manager.DeleteEvent(event_id);
-
-            if (success) {
-                return "{\"success\": true, \"message\": \"Event deleted successfully\"}";
-            } else {
-                return "{\"success\": false, \"message\": \"Event deletion failed\"}";
-            }
-        });
-
-    AddTool("self.schedule.get_statistics",
-        "Obtain schedule statistics information.\n"
-        "Return:\n"
-        "  JSON object of statistics information",
-        PropertyList(),
-        [&schedule_manager](const PropertyList &properties) -> ReturnValue {
-            int total_events = schedule_manager.GetEventCount();
-
-            cJSON *json = cJSON_CreateObject();
-            cJSON_AddNumberToObject(json, "total_events", total_events);
-            cJSON_AddBoolToObject(json, "success", true);
-
-            return json;
-        });
-    
-    // 定时任务工具
-    auto &timer_manager = TimerManager::GetInstance();
-
-    AddTool("self.timer.create_countdown",
-        "Create a countdown timer.\n"
-        "Return:\n"
-        "  `name`: Timer name (required)\n"
-        "  `duration_ms`: Duration in milliseconds (required)\n"
-        "  `description`: Description (optional)\n"
-        "Return:\n"
-        "  Timer ID",
-        PropertyList({Property("name", kPropertyTypeString),
-            Property("duration_ms", kPropertyTypeInteger, 1000, 100, 3600000),
-            Property("description", kPropertyTypeString, "")}),
-        [&timer_manager](const PropertyList &properties) -> ReturnValue {
-            auto name = properties["name"].value<std::string>();
-            uint32_t duration_ms = properties["duration_ms"].value<int>();
-            auto description = properties["description"].value<std::string>();
-
-            std::string timer_id = timer_manager.CreateCountdownTimer(name, duration_ms, description);
-
-            return "{\"success\": true, \"timer_id\": \"" + timer_id + "\", \"message\": \"Countdown timer successfully created\"}";
-        });
-
-        AddTool("self.timer.create_delayed_task",
-            "Create a task for delaying the execution of MCP tools.\n"
-            "Parameter:\n"
-            "  `name`: Task name (required)\n"
-            "  `delay_ms`: Delay time in milliseconds (required)\n"
-            "  `mcp_tool_name`: MCP tool name (required)\n"
-            "  `mcp_tool_args`: MCP tool arguments (optional)\n"
-            "  `description`: Description (optional)\n"
-            "Return:\n"
-            "  Task ID",
-            PropertyList({Property("name", kPropertyTypeString),
-                          Property("delay_ms", kPropertyTypeInteger, 1000, 100, 3600000),
-                          Property("mcp_tool_name", kPropertyTypeString),
-                          Property("mcp_tool_args", kPropertyTypeString, ""),
-                          Property("description", kPropertyTypeString, "")}),
-            [&timer_manager](const PropertyList &properties) -> ReturnValue
-            {
-                auto name = properties["name"].value<std::string>();
-                uint32_t delay_ms = properties["delay_ms"].value<int>();
-                auto mcp_tool_name = properties["mcp_tool_name"].value<std::string>();
-                auto mcp_tool_args = properties["mcp_tool_args"].value<std::string>();
-                auto description = properties["description"].value<std::string>();
-
-                std::string task_id = timer_manager.CreateDelayedMcpTask(
-                    name, delay_ms, mcp_tool_name, mcp_tool_args, description);
-
-                return "{\"success\": true, \"task_id\": \"" + task_id + "\", \"message\": \"Delay task created successfully\"}";
-            });
-
-        AddTool("self.timer.start_task",
-            "Start scheduled tasks.\n"
-            "Parameter:\n"
-            "  `task_id`: Task ID (required)\n"
-            "Return:\n"
-            "  Operation result",
-            PropertyList({Property("task_id", kPropertyTypeString)}),
-            [&timer_manager](const PropertyList &properties) -> ReturnValue {
-                auto task_id = properties["task_id"].value<std::string>();
-
-                bool success = timer_manager.StartTask(task_id);
-
-                if (success) {
-                    return "{\"success\": true, \"message\": \"Task started successfully\"}";
-                } else {
-                    return "{\"success\": false, \"message\": \"Task start failed\"}";
-                }
-            });
-
-        AddTool("self.timer.stop_task",
-            "Stop scheduled tasks.\n"
-            "Parameter:\n"
-            "  `task_id`: Task ID (Required)\n"
-            "Return:\n"
-            "  Operation result",
-            PropertyList({Property("task_id", kPropertyTypeString)}),
-            [&timer_manager](const PropertyList &properties) -> ReturnValue {
-                auto task_id = properties["task_id"].value<std::string>();
-
-                bool success = timer_manager.StopTask(task_id);
-
-                if (success) {
-                    return "{\"success\": true, \"message\": \"Task stopped successfully\"}";
-                } else {
-                    return "{\"success\": false, \"message\": \"Task stop failed\"}";
-                }
-            });
-        AddTool("self.timer.get_tasks",
-            "Get all scheduled tasks.\n"
-            "Return:\n"
-            "  JSON array of task objects",
-            PropertyList(),
-            [&timer_manager](const PropertyList &properties) -> ReturnValue {
-                std::string json_str = timer_manager.ExportToJson();
-                return json_str;
-            });
-
-        AddTool("self.timer.get_statistics",
-            "Obtain timer statistics information.\n"
-            "Return:\n"
-            "  JSON object of statistics information",
-            PropertyList(),
-            [&timer_manager](const PropertyList &properties) -> ReturnValue {
-                int total_tasks = timer_manager.GetTaskCount();
-
-                cJSON *json = cJSON_CreateObject();
-                cJSON_AddNumberToObject(json, "total_tasks", total_tasks);
-                cJSON_AddBoolToObject(json, "success", true);
-
-                return json;
-            });
 }
 
 void McpServer::AddTool(McpTool* tool) {

@@ -3,7 +3,7 @@
 
 #include "emoji_collection.h"
 
-#ifdef LVGL_VERSION_MAJOR
+#ifndef CONFIG_USE_EMOTE_MESSAGE_STYLE
 #define HAVE_LVGL 1
 #include <lvgl.h>
 #endif
@@ -39,11 +39,21 @@ public:
     virtual Theme* GetTheme() { return current_theme_; }
     virtual void UpdateStatusBar(bool update_all = false);
     virtual void SetPowerSaveMode(bool on);
+    virtual void SetMusicInfo(const char* song_name);
+    virtual void SetMusicProgress(const char* song_name, int current_seconds, int total_seconds, float progress_percent);
+    virtual void ClearMusicInfo();
 
-    // 音乐播放相关方法
-    virtual void SetMusicInfo(const char* info) {}
+    // Alarm display on idle screen (for boards with idle screen support)
+    virtual void ShowAlarmOnIdleScreen(const char* alarm_message) {}  // Default: do nothing
+    virtual void HideAlarmOnIdleScreen() {}  // Default: do nothing
+
+    // State change and clock timer callbacks (for boards with idle screen support)
+    virtual void OnStateChanged() {}  // Default: do nothing
+    virtual void OnClockTimer() {}    // Default: do nothing, called every second
+
     virtual void start() {}
-    virtual void stopFft() {}
+    virtual void clearScreen() {}  // 清除FFT显示，默认为空实现
+    virtual void stopFft() {}      // 停止FFT显示，默认为空实现
 
     inline int width() const { return width_; }
     inline int height() const { return height_; }
@@ -57,6 +67,8 @@ protected:
     friend class DisplayLockGuard;
     virtual bool Lock(int timeout_ms = 0) = 0;
     virtual void Unlock() = 0;
+    lv_obj_t* chat_message_label_ = nullptr;
+    lv_obj_t *emotion_label_ = nullptr;
 };
 
 

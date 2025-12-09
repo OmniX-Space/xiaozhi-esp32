@@ -15,6 +15,7 @@
 #include "ota.h"
 #include "audio_service.h"
 #include "device_state_event.h"
+#include "alarm_manager.h"
 
 
 #define MAIN_EVENT_SCHEDULE (1 << 0)
@@ -62,8 +63,13 @@ public:
     void SetAecMode(AecMode mode);
     AecMode GetAecMode() const { return aec_mode_; }
     void PlaySound(const std::string_view& sound);
-    AudioService& GetAudioService() { return audio_service_; }
+    // 新增：接收外部音频数据（如音乐播放）
     void AddAudioData(AudioStreamPacket&& packet);
+    AudioService& GetAudioService() { return audio_service_; }
+    
+    // 闹钟功能
+    AlarmManager& GetAlarmManager() { return AlarmManager::GetInstance(); }
+    std::vector<std::string> GetDefaultAlarmMusicList() const;
 
 private:
     Application();
@@ -91,6 +97,18 @@ private:
     void CheckAssetsVersion();
     void ShowActivationCode(const std::string& code, const std::string& message);
     void SetListeningMode(ListeningMode mode);
+    
+    // 闹钟相关私有方法
+    void OnAlarmTriggered(const AlarmItem& alarm);
+    void OnAlarmSnoozed(const AlarmItem& alarm);
+    void OnAlarmStopped(const AlarmItem& alarm);
+    
+    // 音乐进度跟踪相关
+    void UpdateMusicProgress();
+    std::string current_music_name_;
+    int64_t music_start_time_ms_ = 0;      // 音乐开始播放的时间戳
+    int music_duration_seconds_ = 180;      // 默认歌曲长度（3分钟）
+    bool is_music_playing_ = false;
 };
 
 

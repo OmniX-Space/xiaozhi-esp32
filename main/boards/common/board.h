@@ -12,9 +12,7 @@
 #include "backlight.h"
 #include "camera.h"
 #include "assets.h"
-
 #include "music.h"
-
 
 void* create_board();
 class AudioCodec;
@@ -45,11 +43,11 @@ public:
     virtual std::string GetUuid() { return uuid_; }
     virtual Backlight* GetBacklight() { return nullptr; }
     virtual Led* GetLed();
+    virtual Music* GetMusic(); 
     virtual AudioCodec* GetAudioCodec() = 0;
     virtual bool GetTemperature(float& esp32temp);
     virtual Display* GetDisplay();
     virtual Camera* GetCamera();
-    virtual Music* GetMusic();
     virtual NetworkInterface* GetNetwork() = 0;
     virtual void StartNetwork() = 0;
     virtual const char* GetNetworkStateIcon() = 0;
@@ -58,7 +56,6 @@ public:
     virtual void SetPowerSaveMode(bool enabled) = 0;
     virtual std::string GetBoardJson() = 0;
     virtual std::string GetDeviceStatusJson() = 0;
-    virtual Assets* GetAssets();
 };
 
 #define DECLARE_BOARD(BOARD_CLASS_NAME) \

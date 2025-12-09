@@ -32,9 +32,22 @@ protected:
     lv_obj_t* chat_message_label_ = nullptr;
     esp_timer_handle_t preview_timer_ = nullptr;
     std::unique_ptr<LvglImage> preview_image_cached_ = nullptr;
+    
+    // 音乐播放界面UI元素
+    lv_obj_t* music_panel_ = nullptr;           // 音乐播放面板
+    lv_obj_t* music_title_label_ = nullptr;     // 歌曲名称标签
+    lv_obj_t* music_time_label_ = nullptr;      // 时间显示标签
+    lv_obj_t* music_progress_bar_ = nullptr;    // 进度条
+    lv_obj_t* music_progress_bg_ = nullptr;     // 进度条背景
+    lv_obj_t* music_vinyl_record_ = nullptr;    // 旋转唱片
+    lv_obj_t* music_vinyl_center_ = nullptr;    // 唱片中心圆点
+    lv_obj_t* music_vinyl_arm_ = nullptr;       // 唱片臂（可选）
+    lv_anim_t* vinyl_rotation_anim_ = nullptr;  // 旋转动画
+    bool music_panel_visible_ = false;          // 音乐面板是否可见
 
     void InitializeLcdThemes();
     void SetupUI();
+    void SetupMusicPanel();  // 初始化音乐播放面板
     virtual bool Lock(int timeout_ms = 0) override;
     virtual void Unlock() override;
 
@@ -50,6 +63,11 @@ public:
 
     // Add theme switching function
     virtual void SetTheme(Theme* theme) override;
+
+    // Add music display functions
+    virtual void SetMusicInfo(const char* song_name) override;
+    virtual void SetMusicProgress(const char* song_name, int current_seconds, int total_seconds, float progress_percent) override;
+    virtual void ClearMusicInfo() override;
 };
 
 // SPI LCD显示器

@@ -17,13 +17,13 @@
 
 #define TAG "LcdDisplay"
 
-LV_FONT_DECLARE(LVGL_TEXT_FONT);
-LV_FONT_DECLARE(LVGL_ICON_FONT);
+LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
+LV_FONT_DECLARE(BUILTIN_ICON_FONT);
 LV_FONT_DECLARE(font_awesome_30_4);
 
 void LcdDisplay::InitializeLcdThemes() {
-    auto text_font = std::make_shared<LvglBuiltInFont>(&LVGL_TEXT_FONT);
-    auto icon_font = std::make_shared<LvglBuiltInFont>(&LVGL_ICON_FONT);
+    auto text_font = std::make_shared<LvglBuiltInFont>(&BUILTIN_TEXT_FONT);
+    auto icon_font = std::make_shared<LvglBuiltInFont>(&BUILTIN_ICON_FONT);
     auto large_icon_font = std::make_shared<LvglBuiltInFont>(&font_awesome_30_4);
 
     // light theme
@@ -296,6 +296,16 @@ LcdDisplay::~LcdDisplay() {
     if (preview_timer_ != nullptr) {
         esp_timer_stop(preview_timer_);
         esp_timer_delete(preview_timer_);
+    }
+    
+    // Clean up vinyl rotation animation
+    if (vinyl_rotation_anim_) {
+        if (music_vinyl_record_) {
+            // 删除该对象的所有动画
+            lv_anim_del(music_vinyl_record_, nullptr);
+        }
+        delete vinyl_rotation_anim_;
+        vinyl_rotation_anim_ = nullptr;
     }
 
     if (preview_image_ != nullptr) {
@@ -879,6 +889,9 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
         lv_obj_remove_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
         preview_image_cached_.reset();
+        if (gif_controller_) {
+            gif_controller_->Start();
+        }
         return;
     }
 
@@ -892,6 +905,9 @@ void LcdDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
     }
 
     // Hide emoji_box_
+    if (gif_controller_) {
+        gif_controller_->Stop();
+    }
     lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
     esp_timer_stop(preview_timer_);
@@ -1108,4 +1124,302 @@ void LcdDisplay::SetTheme(Theme* theme) {
 
     // No errors occurred. Save theme to settings
     Display::SetTheme(lvgl_theme);
+}
+
+void LcdDisplay::SetMusicInfo(const char* song_name) {
+#if CONFIG_USE_WECHAT_MESSAGE_STYLE
+    // 微信模式下不显示歌名，保持原有聊天功能
+    return;
+#else
+    // 非微信模式：在表情下方显示歌名
+    DisplayLockGuard lock(this);
+    if (chat_message_label_ == nullptr) {
+        return;
+    }
+    
+    if (song_name != nullptr && strlen(song_name) > 0) {
+        std::string music_text = "";
+        music_text += song_name;
+        lv_label_set_text(chat_message_label_, music_text.c_str());
+        
+        // 确保显示 emotion_label_ 和 chat_message_label_，隐藏 preview_image_
+        if (emotion_label_ != nullptr) {
+            lv_obj_clear_flag(emotion_label_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (preview_image_ != nullptr) {
+            lv_obj_add_flag(preview_image_, LV_OBJ_FLAG_HIDDEN);
+        }
+    } else {
+        // 清空歌名显示
+        lv_label_set_text(chat_message_label_, "");
+    }
+#endif
+}
+
+// 唱片旋转动画回调函数
+static void vinyl_rotation_cb(void* obj, int32_t v) {
+    lv_obj_set_style_transform_angle((lv_obj_t*)obj, v, 0);
+}
+
+void LcdDisplay::SetupMusicPanel() {
+    if (music_panel_ != nullptr) {
+        return; // 已经初始化过了
+    }
+    
+    // 创建音乐播放面板
+    music_panel_ = lv_obj_create(content_);
+    lv_obj_set_size(music_panel_, width_ - 20, 160);  // 增加高度容纳唱片
+    lv_obj_align(music_panel_, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(music_panel_, lv_color_hex(0x0a0a0a), 0);
+    lv_obj_set_style_bg_opa(music_panel_, LV_OPA_90, 0);
+    lv_obj_set_style_border_color(music_panel_, lv_color_hex(0x00ff88), 0);
+    lv_obj_set_style_border_width(music_panel_, 2, 0);
+    lv_obj_set_style_radius(music_panel_, 20, 0);
+    lv_obj_add_flag(music_panel_, LV_OBJ_FLAG_HIDDEN); // 默认隐藏
+    
+    // === 创建旋转唱片 ===
+    int vinyl_size = 80;  // 唱片大小
+    music_vinyl_record_ = lv_obj_create(music_panel_);
+    lv_obj_set_size(music_vinyl_record_, vinyl_size, vinyl_size);
+    lv_obj_align(music_vinyl_record_, LV_ALIGN_LEFT_MID, 15, -10);
+    lv_obj_set_style_bg_color(music_vinyl_record_, lv_color_hex(0x1a1a1a), 0);
+    lv_obj_set_style_bg_opa(music_vinyl_record_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(music_vinyl_record_, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_border_width(music_vinyl_record_, 2, 0);
+    lv_obj_set_style_radius(music_vinyl_record_, LV_RADIUS_CIRCLE, 0);
+    
+    // 设置旋转中心点到唱片的中心，让唱片原地自转
+    lv_obj_set_style_transform_pivot_x(music_vinyl_record_, vinyl_size / 2, 0);
+    lv_obj_set_style_transform_pivot_y(music_vinyl_record_, vinyl_size / 2, 0);
+    
+    // 添加唱片纹理环
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t* ring = lv_obj_create(music_vinyl_record_);
+        int ring_size = vinyl_size - 20 - (i * 12);
+        lv_obj_set_size(ring, ring_size, ring_size);
+        lv_obj_center(ring);
+        lv_obj_set_style_bg_opa(ring, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_color(ring, lv_color_hex(0x444444), 0);
+        lv_obj_set_style_border_width(ring, 1, 0);
+        lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, 0);
+    }
+    
+    // 创建唱片中心圆点
+    music_vinyl_center_ = lv_obj_create(music_vinyl_record_);
+    lv_obj_set_size(music_vinyl_center_, 12, 12);
+    lv_obj_center(music_vinyl_center_);
+    lv_obj_set_style_bg_color(music_vinyl_center_, lv_color_hex(0x00ff88), 0);
+    lv_obj_set_style_bg_opa(music_vinyl_center_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(music_vinyl_center_, 0, 0);
+    lv_obj_set_style_radius(music_vinyl_center_, LV_RADIUS_CIRCLE, 0);
+    
+    // 创建唱片上的小标签
+    lv_obj_t* vinyl_label = lv_label_create(music_vinyl_record_);
+    lv_label_set_text(vinyl_label, "♪");
+    lv_obj_set_style_text_color(vinyl_label, lv_color_hex(0x888888), 0);
+    lv_obj_align(vinyl_label, LV_ALIGN_CENTER, 0, -15);
+    
+    // === 创建唱片臂 ===
+    music_vinyl_arm_ = lv_obj_create(music_panel_);
+    lv_obj_set_size(music_vinyl_arm_, 4, 35);
+    lv_obj_align(music_vinyl_arm_, LV_ALIGN_LEFT_MID, 75, -35);
+    lv_obj_set_style_bg_color(music_vinyl_arm_, lv_color_hex(0x666666), 0);
+    lv_obj_set_style_bg_opa(music_vinyl_arm_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(music_vinyl_arm_, 0, 0);
+    lv_obj_set_style_radius(music_vinyl_arm_, 2, 0);
+    lv_obj_set_style_transform_pivot_x(music_vinyl_arm_, 2, 0);
+    lv_obj_set_style_transform_pivot_y(music_vinyl_arm_, 2, 0);
+    lv_obj_set_style_transform_angle(music_vinyl_arm_, 200, 0);  // 初始角度
+    
+    // 唱片臂头部
+    lv_obj_t* arm_head = lv_obj_create(music_vinyl_arm_);
+    lv_obj_set_size(arm_head, 8, 8);
+    lv_obj_align(arm_head, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_color(arm_head, lv_color_hex(0x888888), 0);
+    lv_obj_set_style_bg_opa(arm_head, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(arm_head, 0, 0);
+    lv_obj_set_style_radius(arm_head, LV_RADIUS_CIRCLE, 0);
+    
+    // === 创建右侧信息区域 ===
+    // 创建歌曲名称标签
+    music_title_label_ = lv_label_create(music_panel_);
+    lv_obj_set_width(music_title_label_, width_ - 140);  // 为左侧唱片留出空间
+    lv_obj_align(music_title_label_, LV_ALIGN_TOP_RIGHT, -15, 20);
+    lv_label_set_text(music_title_label_, "未知歌曲");
+    lv_obj_set_style_text_color(music_title_label_, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_align(music_title_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(music_title_label_, LV_LABEL_LONG_SCROLL_CIRCULAR);
+    
+    // 创建时间显示标签
+    music_time_label_ = lv_label_create(music_panel_);
+    lv_obj_align(music_time_label_, LV_ALIGN_TOP_RIGHT, -15, 50);
+    lv_label_set_text(music_time_label_, "00:00 / 00:00");
+    lv_obj_set_style_text_color(music_time_label_, lv_color_hex(0xcccccc), 0);
+    lv_obj_set_style_text_align(music_time_label_, LV_TEXT_ALIGN_CENTER, 0);
+    
+    // 创建进度条背景
+    music_progress_bg_ = lv_obj_create(music_panel_);
+    lv_obj_set_size(music_progress_bg_, width_ - 140, 8);  // 调整宽度
+    lv_obj_align(music_progress_bg_, LV_ALIGN_TOP_RIGHT, -15, 80);
+    lv_obj_set_style_bg_color(music_progress_bg_, lv_color_hex(0x333333), 0);
+    lv_obj_set_style_bg_opa(music_progress_bg_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(music_progress_bg_, 0, 0);
+    lv_obj_set_style_radius(music_progress_bg_, 4, 0);
+    
+    // 创建进度条
+    music_progress_bar_ = lv_obj_create(music_progress_bg_);
+    lv_obj_set_size(music_progress_bar_, 0, 8);
+    lv_obj_align(music_progress_bar_, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(music_progress_bar_, lv_color_hex(0x00ff88), 0);
+    lv_obj_set_style_bg_opa(music_progress_bar_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(music_progress_bar_, 0, 0);
+    lv_obj_set_style_radius(music_progress_bar_, 4, 0);
+    
+    // 添加音乐波形装饰
+    lv_obj_t* wave1 = lv_obj_create(music_panel_);
+    lv_obj_set_size(wave1, 3, 20);
+    lv_obj_align(wave1, LV_ALIGN_BOTTOM_RIGHT, -80, -15);
+    lv_obj_set_style_bg_color(wave1, lv_color_hex(0x00ff88), 0);
+    lv_obj_set_style_bg_opa(wave1, LV_OPA_60, 0);
+    lv_obj_set_style_border_width(wave1, 0, 0);
+    lv_obj_set_style_radius(wave1, 2, 0);
+    
+    lv_obj_t* wave2 = lv_obj_create(music_panel_);
+    lv_obj_set_size(wave2, 3, 30);
+    lv_obj_align(wave2, LV_ALIGN_BOTTOM_RIGHT, -70, -15);
+    lv_obj_set_style_bg_color(wave2, lv_color_hex(0x00ff88), 0);
+    lv_obj_set_style_bg_opa(wave2, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(wave2, 0, 0);
+    lv_obj_set_style_radius(wave2, 2, 0);
+    
+    lv_obj_t* wave3 = lv_obj_create(music_panel_);
+    lv_obj_set_size(wave3, 3, 15);
+    lv_obj_align(wave3, LV_ALIGN_BOTTOM_RIGHT, -60, -15);
+    lv_obj_set_style_bg_color(wave3, lv_color_hex(0x00ff88), 0);
+    lv_obj_set_style_bg_opa(wave3, LV_OPA_40, 0);
+    lv_obj_set_style_border_width(wave3, 0, 0);
+    lv_obj_set_style_radius(wave3, 2, 0);
+    
+    // 初始化旋转动画
+    vinyl_rotation_anim_ = new lv_anim_t;
+    lv_anim_init(vinyl_rotation_anim_);
+    lv_anim_set_var(vinyl_rotation_anim_, music_vinyl_record_);
+    lv_anim_set_exec_cb(vinyl_rotation_anim_, vinyl_rotation_cb);
+    lv_anim_set_values(vinyl_rotation_anim_, 0, 3600);  // 0到360度（3600是LVGL中的360度）
+    lv_anim_set_time(vinyl_rotation_anim_, 3000);  // 3秒一圈
+    lv_anim_set_repeat_count(vinyl_rotation_anim_, LV_ANIM_REPEAT_INFINITE);
+}
+
+void LcdDisplay::SetMusicProgress(const char* song_name, int current_seconds, int total_seconds, float progress_percent) {
+#if CONFIG_USE_WECHAT_MESSAGE_STYLE
+    // 微信模式下使用简化显示
+    Display::SetMusicProgress(song_name, current_seconds, total_seconds, progress_percent);
+    return;
+#else
+    DisplayLockGuard lock(this);
+    
+    // 确保音乐面板已创建
+    if (music_panel_ == nullptr) {
+        SetupMusicPanel();
+    }
+    
+    // 显示音乐面板
+    if (!music_panel_visible_) {
+        lv_obj_clear_flag(music_panel_, LV_OBJ_FLAG_HIDDEN);
+        music_panel_visible_ = true;
+        
+        // 隐藏其他元素
+        if (chat_message_label_) {
+            lv_obj_add_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (emoji_box_) {
+            lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        }
+        
+        // 启动唱片旋转动画
+        if (vinyl_rotation_anim_ && music_vinyl_record_) {
+            lv_anim_start(vinyl_rotation_anim_);
+            ESP_LOGI("LcdDisplay", "Started vinyl rotation animation");
+        }
+        
+        // 唱片臂放下动画
+        if (music_vinyl_arm_) {
+            lv_anim_t arm_anim;
+            lv_anim_init(&arm_anim);
+            lv_anim_set_var(&arm_anim, music_vinyl_arm_);
+            lv_anim_set_exec_cb(&arm_anim, vinyl_rotation_cb);
+            lv_anim_set_values(&arm_anim, 200, 320);  // 从200度转到320度
+            lv_anim_set_time(&arm_anim, 500);  // 0.5秒动画
+            lv_anim_start(&arm_anim);
+        }
+    }
+    
+    // 更新歌曲名称
+    if (music_title_label_ && song_name) {
+        lv_label_set_text(music_title_label_, song_name);
+    }
+    
+    // 更新时间显示
+    if (music_time_label_) {
+        char time_str[32];
+        int current_min = current_seconds / 60;
+        int current_sec = current_seconds % 60;
+        int total_min = total_seconds / 60;
+        int total_sec = total_seconds % 60;
+        
+        snprintf(time_str, sizeof(time_str), "%02d:%02d / %02d:%02d", 
+                current_min, current_sec, total_min, total_sec);
+        lv_label_set_text(music_time_label_, time_str);
+    }
+    
+    // 更新进度条
+    if (music_progress_bar_ && music_progress_bg_) {
+        int bg_width = lv_obj_get_width(music_progress_bg_);
+        int progress_width = (int)(bg_width * progress_percent / 100.0f);
+        progress_width = progress_width < 0 ? 0 : (progress_width > bg_width ? bg_width : progress_width);
+        lv_obj_set_width(music_progress_bar_, progress_width);
+    }
+    
+    // 设置音乐相关的表情图标
+    SetEmotion(FONT_AWESOME_MUSIC);
+#endif
+}
+
+void LcdDisplay::ClearMusicInfo() {
+    DisplayLockGuard lock(this);
+    
+    // 隐藏音乐面板
+    if (music_panel_ && music_panel_visible_) {
+        // 停止唱片旋转动画
+        if (vinyl_rotation_anim_ && music_vinyl_record_) {
+            lv_anim_del(music_vinyl_record_, nullptr);  // 删除该对象的所有动画
+            ESP_LOGI("LcdDisplay", "Stopped vinyl rotation animation");
+        }
+        
+        // 唱片臂收起动画
+        if (music_vinyl_arm_) {
+            lv_anim_t arm_anim;
+            lv_anim_init(&arm_anim);
+            lv_anim_set_var(&arm_anim, music_vinyl_arm_);
+            lv_anim_set_exec_cb(&arm_anim, vinyl_rotation_cb);
+            lv_anim_set_values(&arm_anim, 320, 200);  // 从320度转回200度
+            lv_anim_set_time(&arm_anim, 500);  // 0.5秒动画
+            lv_anim_start(&arm_anim);
+        }
+        
+        lv_obj_add_flag(music_panel_, LV_OBJ_FLAG_HIDDEN);
+        music_panel_visible_ = false;
+        
+        // 重新显示聊天消息
+        if (chat_message_label_) {
+            lv_obj_clear_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(chat_message_label_, "");
+        }
+        if (emoji_box_) {
+            lv_obj_clear_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    
+    // 重置表情图标
+    SetEmotion(FONT_AWESOME_NEUTRAL);
 }

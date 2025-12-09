@@ -40,4 +40,7 @@
 #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_2
 #define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
 
+/**< use new idle screen of xiaozhi */
+#define IDLE_SCREEN_HOOK            1
+
 #endif // _BOARD_CONFIG_H_

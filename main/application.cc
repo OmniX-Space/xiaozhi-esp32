@@ -11,6 +11,8 @@
 #include "settings.h"
 
 #include <cstring>
+#include <cstdlib>
+#include <vector>
 #include <esp_log.h>
 #include <cJSON.h>
 #include <driver/gpio.h>
@@ -72,28 +74,20 @@ Application::~Application() {
 void Application::CheckAssetsVersion() {
     auto& board = Board::GetInstance();
     auto display = board.GetDisplay();
-    auto assets = board.GetAssets();
-    if (!assets) {
-        ESP_LOGE(TAG, "Assets is not set for board %s", BOARD_NAME);
-        return;
-    }
+    auto& assets = Assets::GetInstance();
 
-    if (!assets->partition_valid()) {
-        ESP_LOGE(TAG, "Assets partition is not valid for board %s", BOARD_NAME);
+    if (!assets.partition_valid()) {
+        ESP_LOGW(TAG, "Assets partition is disabled for board %s", BOARD_NAME);
         return;
     }
     
     Settings settings("assets", true);
     // Check if there is a new assets need to be downloaded
     std::string download_url = settings.GetString("download_url");
-    if (!download_url.empty()) {
-        settings.EraseKey("download_url");
-    }
-    if (download_url.empty() && !assets->checksum_valid()) {
-        download_url = assets->default_assets_url();
-    }
 
     if (!download_url.empty()) {
+        settings.EraseKey("download_url");
+
         char message[256];
         snprintf(message, sizeof(message), Lang::Strings::FOUND_NEW_ASSETS, download_url.c_str());
         Alert(Lang::Strings::LOADING_ASSETS, message, "cloud_arrow_down", Lang::Sounds::OGG_UPGRADE);
@@ -104,7 +98,7 @@ void Application::CheckAssetsVersion() {
         board.SetPowerSaveMode(false);
         display->SetChatMessage("system", Lang::Strings::PLEASE_WAIT);
 
-        bool success = assets->Download(download_url, [display](int progress, size_t speed) -> void {
+        bool success = assets.Download(download_url, [display](int progress, size_t speed) -> void {
             std::thread([display, progress, speed]() {
                 char buffer[32];
                 snprintf(buffer, sizeof(buffer), "%d%% %uKB/s", progress, speed / 1024);
@@ -123,7 +117,7 @@ void Application::CheckAssetsVersion() {
     }
 
     // Apply assets
-    assets->Apply();
+    assets.Apply();
     display->SetChatMessage("system", "");
     display->SetEmotion("microchip_ai");
 }
@@ -360,6 +354,9 @@ void Application::Start() {
     /* Setup the display */
     auto display = board.GetDisplay();
 
+    // Print board name/version info
+    display->SetChatMessage("system", SystemInfo::GetUserAgent().c_str());
+
     /* Setup the audio service */
     auto codec = board.GetAudioCodec();
     audio_service_.Initialize(codec);
@@ -376,6 +373,12 @@ void Application::Start() {
         xEventGroupSetBits(event_group_, MAIN_EVENT_VAD_CHANGE);
     };
     audio_service_.SetCallbacks(callbacks);
+
+    // Start the main event loop task with priority 3
+    xTaskCreate([](void* arg) {
+        ((Application*)arg)->MainEventLoop();
+        vTaskDelete(NULL);
+    }, "main_event_loop", 2048 * 4, this, 3, &main_event_loop_task_handle_);
 
     /* Start the clock timer to update the status bar */
     esp_timer_start_periodic(clock_timer_handle_, 1000000);
@@ -537,15 +540,25 @@ void Application::Start() {
         std::string message = std::string(Lang::Strings::VERSION) + ota.GetCurrentVersion();
         display->ShowNotification(message.c_str());
         display->SetChatMessage("system", "");
+        
+        // 初始化闹钟管理器
+        auto& alarm_manager = AlarmManager::GetInstance();
+        alarm_manager.Initialize();
+        
+        // 设置闹钟回调
+        alarm_manager.SetAlarmTriggeredCallback([this](const AlarmItem& alarm) {
+            Schedule([this, alarm]() { OnAlarmTriggered(alarm); });
+        });
+        alarm_manager.SetAlarmSnoozeCallback([this](const AlarmItem& alarm) {
+            Schedule([this, alarm]() { OnAlarmSnoozed(alarm); });
+        });
+        alarm_manager.SetAlarmStopCallback([this](const AlarmItem& alarm) {
+            Schedule([this, alarm]() { OnAlarmStopped(alarm); });
+        });
+        
         // Play the success sound to indicate the device is ready
         audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
     }
-
-    // Start the main event loop task with priority 3
-    xTaskCreate([](void* arg) {
-        ((Application*)arg)->MainEventLoop();
-        vTaskDelete(NULL);
-    }, "main_event_loop", 2048 * 4, this, 3, &main_event_loop_task_handle_);
 }
 
 // Add a async task to MainLoop
@@ -606,6 +619,16 @@ void Application::MainEventLoop() {
             clock_ticks_++;
             auto display = Board::GetInstance().GetDisplay();
             display->UpdateStatusBar();
+            display->OnClockTimer();
+            
+            // 检查闹钟（每秒检查一次）
+            auto& alarm_manager = AlarmManager::GetInstance();
+            alarm_manager.CheckAlarms();
+            
+            // 更新音乐播放进度（每秒更新一次）
+            if (is_music_playing_) {
+                UpdateMusicProgress();
+            }
         
             // Print the debug info every 10 seconds
             if (clock_ticks_ % 10 == 0) {
@@ -635,7 +658,7 @@ void Application::OnWakeWordDetected() {
 
         auto wake_word = audio_service_.GetLastWakeWord();
         ESP_LOGI(TAG, "Wake word detected: %s", wake_word.c_str());
-#if CONFIG_USE_AFE_WAKE_WORD || CONFIG_USE_CUSTOM_WAKE_WORD
+#if CONFIG_SEND_WAKE_WORD_DATA
         // Encode and send the wake word data to the server
         while (auto packet = audio_service_.PopWakeWordPacket()) {
             protocol_->SendAudio(std::move(packet));
@@ -685,6 +708,7 @@ void Application::SetDeviceState(DeviceState state) {
     auto display = board.GetDisplay();
     auto led = board.GetLed();
     led->OnStateChanged();
+    display->OnStateChanged();
     switch (state) {
         case kDeviceStateUnknown:
         case kDeviceStateIdle:
@@ -716,11 +740,7 @@ void Application::SetDeviceState(DeviceState state) {
             if (listening_mode_ != kListeningModeRealtime) {
                 audio_service_.EnableVoiceProcessing(false);
                 // Only AFE wake word can be detected in speaking mode
-#if CONFIG_USE_AFE_WAKE_WORD
-                audio_service_.EnableWakeWordDetection(true);
-#else
-                audio_service_.EnableWakeWordDetection(false);
-#endif
+                audio_service_.EnableWakeWordDetection(audio_service_.IsAfeWakeWord());
             }
             audio_service_.ResetDecoder();
             break;
@@ -841,10 +861,8 @@ void Application::SendMcpMessage(const std::string& payload) {
 
     // Make sure you are using main thread to send MCP message
     if (xTaskGetCurrentTaskHandle() == main_event_loop_task_handle_) {
-        ESP_LOGI(TAG, "Send MCP message in main thread");
         protocol_->SendMcpMessage(payload);
     } else {
-        ESP_LOGI(TAG, "Send MCP message in sub thread");
         Schedule([this, payload = std::move(payload)]() {
             protocol_->SendMcpMessage(payload);
         });
@@ -878,6 +896,10 @@ void Application::SetAecMode(AecMode mode) {
     });
 }
 
+void Application::PlaySound(const std::string_view& sound) {
+    audio_service_.PlaySound(sound);
+}
+
 // 新增：接收外部音频数据（如音乐播放）
 void Application::AddAudioData(AudioStreamPacket&& packet) {
     auto codec = Board::GetInstance().GetAudioCodec();
@@ -890,9 +912,6 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
             
             // 检查采样率是否匹配，如果不匹配则进行简单重采样
             if (packet.sample_rate != codec->output_sample_rate()) {
-                // ESP_LOGI(TAG, "Resampling music audio from %d to %d Hz", 
-                //         packet.sample_rate, codec->output_sample_rate());
-                
                 // 验证采样率参数
                 if (packet.sample_rate <= 0 || codec->output_sample_rate() <= 0) {
                     ESP_LOGE(TAG, "Invalid sample rates: %d -> %d", 
@@ -900,19 +919,12 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
                     return;
                 }
                 
-                std::vector<int16_t> resampled;
-                
-                if (packet.sample_rate > codec->output_sample_rate()) {
-                    ESP_LOGI(TAG, "Music Player: Adjust the sampling rate from %d Hz to %d Hz", 
-                        codec->output_sample_rate(), packet.sample_rate);
-
-                    // 尝试动态切换采样率
-                    if (codec->SetOutputSampleRate(packet.sample_rate)) {
-                        ESP_LOGI(TAG, "Successfully switched to music playback sampling rate: %d Hz", packet.sample_rate);
-                    } else {
-                        ESP_LOGW(TAG, "Unable to switch sampling rate, continue using current sampling rate: %d Hz", codec->output_sample_rate());
-                    }
+                // 尝试动态切换采样率
+                if (codec->SetOutputSampleRate(packet.sample_rate)) {
+                    ESP_LOGI(TAG, "Successfully switched to music playback sampling rate: %d Hz", packet.sample_rate);
                 } else {
+                    ESP_LOGW(TAG, "Unable to switch sampling rate, continue using current sampling rate: %d Hz", codec->output_sample_rate());
+                    // 如果无法切换采样率，继续使用当前的采样率进行处理
                     if (packet.sample_rate > codec->output_sample_rate()) {
                         // 下采样：简单丢弃部分样本
                         float downsample_ratio = static_cast<float>(packet.sample_rate) / codec->output_sample_rate();
@@ -933,13 +945,12 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
                         // 上采样：线性插值
                         float upsample_ratio = codec->output_sample_rate() / static_cast<float>(packet.sample_rate);
                         size_t expected_size = static_cast<size_t>(pcm_data.size() * upsample_ratio + 0.5f);
-                        resampled.reserve(expected_size);
-                    
+                        std::vector<int16_t> resampled(expected_size);
+                        
                         for (size_t i = 0; i < pcm_data.size(); ++i) {
                             // 添加原始样本
-                            resampled.push_back(pcm_data[i]);
-                        
-                        
+                            resampled[i * static_cast<size_t>(upsample_ratio)] = pcm_data[i];
+                            
                             // 计算需要插值的样本数
                             int interpolation_count = static_cast<int>(upsample_ratio) - 1;
                             if (interpolation_count > 0 && i + 1 < pcm_data.size()) {
@@ -948,22 +959,21 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
                                 for (int j = 1; j <= interpolation_count; ++j) {
                                     float t = static_cast<float>(j) / (interpolation_count + 1);
                                     int16_t interpolated = static_cast<int16_t>(current + (next - current) * t);
-                                    resampled.push_back(interpolated);
+                                    resampled[i * static_cast<size_t>(upsample_ratio) + j] = interpolated;
                                 }
                             } else if (interpolation_count > 0) {
                                 // 最后一个样本，直接重复
                                 for (int j = 1; j <= interpolation_count; ++j) {
-                                    resampled.push_back(pcm_data[i]);
+                                    resampled[i * static_cast<size_t>(upsample_ratio) + j] = pcm_data[i];
                                 }
                             }
                         }
-
+                        
+                        pcm_data = std::move(resampled);
                         ESP_LOGI(TAG, "Upsampled %d -> %d samples (ratio: %.2f)", 
-                            pcm_data.size(), resampled.size(), upsample_ratio);
+                                pcm_data.size() / static_cast<size_t>(upsample_ratio), pcm_data.size(), upsample_ratio);
                     }
                 }
-                
-                pcm_data = std::move(resampled);
             }
             
             // 确保音频输出已启用
@@ -979,6 +989,234 @@ void Application::AddAudioData(AudioStreamPacket&& packet) {
     }
 }
 
-void Application::PlaySound(const std::string_view& sound) {
-    audio_service_.PlaySound(sound);
+// 随机闹钟音乐列表 - 流行、经典、适合早晨的歌曲
+static const std::vector<std::string> DEFAULT_ALARM_SONGS = {
+    "晴天", "七里香", "青花瓷", "稻香", "彩虹", "告白气球", "说好不哭", 
+    "夜曲", "花海", "简单爱", "听妈妈的话", "东风破", "菊花台",
+    "起风了", "红豆", "好久不见", "匆匆那年", "老男孩", "那些年",
+    "小幸运", "成都", "南山南", "演员", "体面", "盗将行", "大鱼",
+    "新不了情", "月亮代表我的心", "甜蜜蜜", "邓丽君", "我只在乎你",
+    "友谊之光", "童年", "海阔天空", "光辉岁月", "真的爱你", "喜欢你",
+    "突然好想你", "情非得已", "温柔", "倔强", "知足", "三个傻瓜",
+    "恋爱循环", "千本樱", "打上花火", "lemon", "残酷天使的行动纲领",
+    "鸟笼", "虹", "青鸟", "closer", "sugar", "shape of you", 
+    "despacito", "perfect", "happier", "someone like you"
+};
+
+// 获取随机闹钟音乐
+static std::string GetRandomAlarmMusic() {
+    if (DEFAULT_ALARM_SONGS.empty()) {
+        return "";
+    }
+    
+    // 使用当前时间作为随机种子
+    srand(esp_timer_get_time() / 1000000);
+    size_t index = rand() % DEFAULT_ALARM_SONGS.size();
+    return DEFAULT_ALARM_SONGS[index];
+}
+
+// 闹钟回调方法实现
+void Application::OnAlarmTriggered(const AlarmItem& alarm) {
+    ESP_LOGI("Application", "Alarm triggered: %s at %02d:%02d", 
+             alarm.label.c_str(), alarm.hour, alarm.minute);
+    
+    auto& board = Board::GetInstance();
+    auto display = board.GetDisplay();
+    auto music = board.GetMusic();
+    
+    // 显示闹钟信息
+    std::string alarm_message = "🎵 闹钟";
+    if (!alarm.label.empty()) {
+        alarm_message += "\n" + alarm.label;
+    }
+    alarm_message += "\n" + AlarmManager::FormatTime(alarm.hour, alarm.minute);
+    
+    // 优先在时钟界面显示（如果支持）
+    display->ShowAlarmOnIdleScreen(alarm_message.c_str());
+    
+    // 同时设置聊天消息（作为备用）
+    display->SetChatMessage("system", alarm_message.c_str());
+    display->SetEmotion("music");
+    
+    // 确定要播放的音乐
+    std::string music_to_play;
+    if (!alarm.music_name.empty()) {
+        // 使用用户指定的音乐
+        music_to_play = alarm.music_name;
+        ESP_LOGI("Application", "Playing user specified alarm music: %s", music_to_play.c_str());
+    } else {
+        // 随机选择一首默认闹钟音乐
+        music_to_play = GetRandomAlarmMusic();
+        ESP_LOGI("Application", "Playing random alarm music: %s", music_to_play.c_str());
+    }
+    
+    // 播放音乐
+    if (music && !music_to_play.empty()) {
+        // 更新显示，显示正在播放的歌曲
+        std::string playing_message = "🎵 正在播放: " + music_to_play;
+        display->SetChatMessage("system", playing_message.c_str());
+        
+        // 开始下载并播放音乐
+        if (music->Download(music_to_play)) {
+            ESP_LOGI("Application", "Successfully started alarm music: %s", music_to_play.c_str());
+            
+            // 开始音乐进度跟踪
+            current_music_name_ = music_to_play;
+            music_start_time_ms_ = esp_timer_get_time() / 1000;  // 转换为毫秒
+            is_music_playing_ = true;
+            
+            // 尝试获取真实的歌曲长度
+            int real_duration = music->GetCurrentSongDurationSeconds();
+            if (real_duration > 0) {
+                music_duration_seconds_ = real_duration;
+                ESP_LOGI("Application", "Got real song duration: %d seconds", real_duration);
+            }
+            
+            // 启动进度显示
+            display->SetMusicProgress(music_to_play.c_str(), 0, music_duration_seconds_, 0.0f);
+        } else {
+            ESP_LOGW("Application", "Failed to download alarm music: %s, using fallback", music_to_play.c_str());
+            // 如果下载失败，播放默认铃声
+            audio_service_.PlaySound(Lang::Sounds::OGG_VIBRATION);
+        }
+    } else {
+        ESP_LOGW("Application", "Music service not available or no music selected, using default alarm sound");
+        // 如果没有音乐功能或选择失败，播放默认铃声
+        audio_service_.PlaySound(Lang::Sounds::OGG_VIBRATION);
+    }
+    
+    // 显示闹钟控制提示
+    std::string control_message = "🎵 说\"贪睡\"延后5分钟，说\"关闭闹钟\"停止音乐";
+    display->ShowNotification(control_message.c_str());
+}
+
+void Application::OnAlarmSnoozed(const AlarmItem& alarm) {
+    ESP_LOGI("Application", "Alarm snoozed: %s, count: %d/%d", 
+             alarm.label.c_str(), alarm.snooze_count, alarm.max_snooze_count);
+    
+    auto& board = Board::GetInstance();
+    auto display = board.GetDisplay();
+    
+    // 隐藏空闲屏幕上的闹钟信息
+    display->HideAlarmOnIdleScreen();
+    
+    // 停止当前播放的音乐
+    auto music = board.GetMusic();
+    if (music) {
+        music->StopStreaming();
+    }
+    
+    // 停止音乐进度跟踪并清除音乐界面
+    is_music_playing_ = false;
+    display->ClearMusicInfo();
+
+    std::string snooze_message = "💤 闹钟已贪睡 " + std::to_string(alarm.snooze_minutes) + " 分钟";
+    display->SetChatMessage("system", snooze_message.c_str());
+    display->SetEmotion("neutral");
+
+    audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+}
+
+void Application::OnAlarmStopped(const AlarmItem& alarm) {
+    ESP_LOGI("Application", "Alarm stopped: %s", alarm.label.c_str());
+    
+    auto& board = Board::GetInstance();
+    auto display = board.GetDisplay();
+    
+    // 隐藏空闲屏幕上的闹钟信息
+    display->HideAlarmOnIdleScreen();
+    
+    // 停止当前播放的音乐
+    auto music = board.GetMusic();
+    if (music) {
+        music->StopStreaming();
+    }
+    
+    // 停止音乐进度跟踪并清除音乐界面
+    is_music_playing_ = false;
+    display->ClearMusicInfo();
+
+    display->SetChatMessage("system", "✅ 闹钟已关闭");
+    display->SetEmotion("neutral");
+
+    // 显示下一个闹钟信息
+    auto& alarm_manager = AlarmManager::GetInstance();
+    std::string next_alarm_info = alarm_manager.GetNextAlarmInfo();
+    display->ShowNotification(next_alarm_info.c_str());
+
+    audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
+}
+
+// 获取默认闹钟音乐列表
+std::vector<std::string> Application::GetDefaultAlarmMusicList() const {
+    return DEFAULT_ALARM_SONGS;
+}
+
+// 更新音乐播放进度
+void Application::UpdateMusicProgress() {
+    if (!is_music_playing_) {
+        return;
+    }
+    
+    auto& board = Board::GetInstance();
+    auto music = board.GetMusic();
+    auto display = board.GetDisplay();
+    
+    if (!music || !display) {
+        return;
+    }
+    
+    // 从音乐播放器获取真实的播放信息
+    int real_current_seconds = music->GetCurrentPlayTimeSeconds();
+    int real_duration_seconds = music->GetCurrentSongDurationSeconds();
+    float real_progress_percent = music->GetPlayProgress();
+    
+    // 更新存储的歌曲长度（如果有变化）
+    if (real_duration_seconds > 0 && real_duration_seconds != music_duration_seconds_) {
+        music_duration_seconds_ = real_duration_seconds;
+        ESP_LOGI("Application", "Updated song duration: %d seconds", music_duration_seconds_);
+    }
+    
+    // 检查是否播放结束
+    bool is_still_playing = music->IsDownloading() || (real_current_seconds < real_duration_seconds && real_current_seconds > 0);
+    
+    if (!is_still_playing && real_current_seconds >= real_duration_seconds && real_duration_seconds > 0) {
+        is_music_playing_ = false;  // 停止跟踪
+        ESP_LOGI("Application", "Music playback finished: %s (%d/%d seconds)", 
+                 current_music_name_.c_str(), real_current_seconds, real_duration_seconds);
+        
+        // 🎵 音乐播放完毕，自动停止所有活跃的闹钟
+        auto& alarm_manager = AlarmManager::GetInstance();
+        auto active_alarms = alarm_manager.GetActiveAlarms();
+        if (!active_alarms.empty()) {
+            ESP_LOGI("Application", "Auto-stopping alarms after music finished");
+            
+            // 停止闹钟
+            for (const auto& alarm : active_alarms) {
+                alarm_manager.StopAlarm(alarm.id);
+            }
+            
+            // 在界面上显示用户确认消息
+            auto& board = Board::GetInstance();
+            auto display = board.GetDisplay();
+            if (display) {
+                display->SetChatMessage("user", "我听到你的闹钟啦 ✅");
+                display->SetEmotion("happy");
+            }
+        }
+    }
+    
+    // 更新显示（使用真实的播放时间）
+    if (is_music_playing_) {
+        display->SetMusicProgress(current_music_name_.c_str(), 
+                                  real_current_seconds, 
+                                  real_duration_seconds, 
+                                  real_progress_percent);
+        
+        ESP_LOGD("Application", "Music progress: %s - %d/%d seconds (%.1f%%)", 
+                 current_music_name_.c_str(), real_current_seconds, real_duration_seconds, real_progress_percent);
+    } else {
+        // 播放结束，清除界面
+        display->ClearMusicInfo();
+    }
 }

@@ -1,78 +1,33 @@
-# 超级小智-ESP32
-（中文 | English(编写中) | 日本語(编写中)）
+# An MCP-based Chatbot | 一个基于 MCP 的聊天机器人
 
-基于 https://github.com/78/xiaozhi-esp32 改良的船新版本
+（中文 | [English](README_en.md) | [日本語](README_ja.md)）
 
-## 💡介绍
+## 视频
+
+👉 [人类：给 AI 装摄像头 vs AI：当场发现主人三天没洗头【bilibili】](https://www.bilibili.com/video/BV1bpjgzKEhd/)
+
+👉 [手工打造你的 AI 女友，新手入门教程【bilibili】](https://www.bilibili.com/video/BV1XnmFYLEJN/)
+
+## 介绍
+
 这是一个由虾哥开源的 ESP32 项目，以 MIT 许可证发布，允许任何人免费使用，或用于商业用途。
 
 我们希望通过这个项目，能够帮助大家了解 AI 硬件开发，将当下飞速发展的大语言模型应用到实际的硬件设备中。
 
-如果你有任何想法或建议，请随时提出 Issues 或加入 QQ 群：暂无，Telegram群：暂无。
+如果你有任何想法或建议，请随时提出 Issues 或加入 QQ 群：1011329060
 
-项目主要贡献者：小霜霜Meow(抖音、B站UP)、空白泡泡糖果（B站UP），硅灵造物科技（B站UP）
-
-项目其它贡献者：[@zhubinsheng](https://github.com/zhubinsheng)
+项目其它贡献者：@zhubinsheng
 
 贡献者说明：引入部分其它贡献者在其它项目上的代码，并进行了部分修改。
 
-音乐服务器、相关源码提供者(为爱发电)：小霜霜Meow
+音乐服务器相关源码提供者(为爱发电)：小霜霜Meow
+
+感谢群友 cz 提供音乐服务器
 
 音乐服务器源码请见 https://github.com/IntelligentlyEverything/MeowMusicServer
 
-### ❕注意事项
-1. 如果小智说找不到歌曲怎么办？
-进入[小智后台](https://xiaozhi.me/)，找到对应设备，修改角色配置
-- 选择 DeepSeekV3 大语言模型
-- 在人物介绍中填入
-    - 收到音乐相关的需求时，只使用 MPC tool self.music.play_song 工具，同时禁止使用 search_music 功能。
-
-2. 内置API调用失败怎么办？
-请查看具体错误代码后，加入QQ群：865754861，或电报群 http://t.me/MeowMusicServer 给出错误代码和日志，等待我们修复。
-
-### ⚙️已支持硬件芯片系列
-
-- ESP32
-- ESP32-S3
-- ESP32-C3
-- ESP32-C6
-- ESP32-P4
-
-❕大部分硬件由于没有进行完整测试，可能会存在一些问题，属于正常现象，具体可提交issues进行反馈。
-
-### 项目改动范围
-新增:
-- main/schedule_manager.h
-- main/schedule_manager.cc
-- main/audio/timer_manager.h
-- main/audio/timer_manager.cc
-- main/boards/common/music.h
-- main/boards/common/esp32_music.h
-- main/boards/common/esp32_music.cc
-- main/display/esplog_display.h
-- main/display/esplog_display.cc
-- main/protocols/sleep_music_protocol.h
-- main/protocols/sleep_music_protocol.cc
-
-修改:
-- main/audio/codecs/no_audio_codec.h
-- main/audio/codecs/no_audio_codec.cc
-- main/audio/audio_codec.h
-- main/audio/audio_codec.cc
-- main/audio/audio_service.h
-- main/audio/audio_service.cc
-- main/boards/common/board.h
-- main/boards/common/board.cc
-- main/display/display.h
-- main/display/display.cc
-- main/display/lcd_display.h
-- main/display/lcd_display.cc
-- main/application.h
-- main/application.cc
-- main/idf_component.yml
-- main/mcp_server.cc
-
 ### 基于 MCP 控制万物
+
 小智 AI 聊天机器人作为一个语音交互入口，利用 Qwen / DeepSeek 等大模型的 AI 能力，通过 MCP 协议实现多端控制。
 
 ![通过MCP控制万物](docs/mcp-based-graph.jpg)
@@ -91,8 +46,6 @@
 - 支持 ESP32-C3、ESP32-S3、ESP32-P4 芯片平台
 - 通过设备端 MCP 实现设备控制（音量、灯光、电机、GPIO 等）
 - 通过云端 MCP 扩展大模型能力（智能家居控制、PC桌面操作、知识搜索、邮件收发等）
-本项目新增功能:
-- 新增音乐播放功能，支持播放本地音乐(开发中，敬请期待)、云端音乐(完善中)。
 
 ## 硬件
 
@@ -209,10 +162,10 @@
 
 ## Star History
 
-<a href="https://star-history.com/#IntelligentlyEverything/xiaozhi-esp32&Date">
+<a href="https://star-history.com/#78/xiaozhi-esp32&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=IntelligentlyEverything/xiaozhi-esp32&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=IntelligentlyEverything/xiaozhi-esp32&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=IntelligentlyEverything/xiaozhi-esp32&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
  </picture>
 </a>

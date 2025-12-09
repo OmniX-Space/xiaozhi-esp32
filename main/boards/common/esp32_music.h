@@ -25,6 +25,15 @@ struct AudioChunk {
     AudioChunk(uint8_t* d, size_t s) : data(d), size(s) {}
 };
 
+// 歌曲信息结构
+struct SongInfo {
+    std::string title;
+    std::string artist;
+    
+    SongInfo() : title(""), artist("") {}
+    SongInfo(const std::string& t, const std::string& a) : title(t), artist(a) {}
+};
+
 class Esp32Music : public Music {
 public:
     // 显示模式控制 - 移动到public区域
@@ -38,6 +47,7 @@ private:
     std::string current_music_url_;
     std::string current_song_name_;
     bool song_name_displayed_;
+    std::atomic<bool> stop_flag_{false}; // 停止播放标志位
     
     // 歌词相关
     std::string current_lyric_url_;
@@ -50,12 +60,12 @@ private:
     std::atomic<DisplayMode> display_mode_;
     std::atomic<bool> is_playing_;
     std::atomic<bool> is_downloading_;
-    std::atomic<bool> is_paused_;
     std::thread play_thread_;
     std::thread download_thread_;
     int64_t current_play_time_ms_;  // 当前播放时间(毫秒)
     int64_t last_frame_time_ms_;    // 上一帧的时间戳
     int total_frames_decoded_;      // 已解码的帧数
+    int current_song_duration_seconds_;  // 当前歌曲总时长(秒)
 
     // 音频缓冲区
     std::queue<AudioChunk> audio_buffer_;
@@ -69,6 +79,13 @@ private:
     HMP3Decoder mp3_decoder_;
     MP3FrameInfo mp3_frame_info_;
     bool mp3_decoder_initialized_;
+    
+    // 播放队列相关
+    std::vector<SongInfo> playlist_;
+    mutable std::mutex playlist_mutex_;
+    std::atomic<int> current_playlist_index_;
+    std::atomic<bool> playlist_mode_;
+    std::thread playlist_thread_;
     
     // 私有方法
     void DownloadAudioStream(const std::string& music_url);
@@ -87,6 +104,10 @@ private:
     // ID3标签处理
     size_t SkipId3Tag(uint8_t* data, size_t size);
 
+    // 播放队列管理私有方法
+    void PlaylistManagerThread();
+    void PlayCurrentSong();
+
     int16_t* final_pcm_data_fft = nullptr;
 
 public:
@@ -102,20 +123,29 @@ public:
     virtual bool StopStreaming() override;  // 停止流式播放
     virtual size_t GetBufferSize() const override { return buffer_size_; }
     virtual bool IsDownloading() const override { return is_downloading_; }
-    virtual bool IsPlaying() const override { return is_playing_; }
-    virtual bool IsPaused() const override { return is_paused_; }
     virtual int16_t* GetAudioData() override { return final_pcm_data_fft; }
     
     // 显示模式控制方法
     void SetDisplayMode(DisplayMode mode);
     DisplayMode GetDisplayMode() const { return display_mode_.load(); }
     
-    // MCP工具需要的方法
-    virtual bool PlaySong() override;
-    virtual bool SetVolume(int volume) override;
-    virtual bool StopSong() override;
-    virtual bool PauseSong() override;
-    virtual bool ResumeSong() override;
+    // 音乐播放信息获取方法
+    virtual int GetCurrentSongDurationSeconds() const override { return current_song_duration_seconds_; }
+    virtual int GetCurrentPlayTimeSeconds() const override { return (int)(current_play_time_ms_ / 1000); }
+    virtual float GetPlayProgress() const override { 
+        if (current_song_duration_seconds_ <= 0) return 0.0f;
+        return (float)(current_play_time_ms_ / 1000) / current_song_duration_seconds_ * 100.0f; 
+    }
+    
+    // 播放队列相关方法
+    virtual bool PlayPlaylist(const std::vector<SongInfo>& songs) override;
+    virtual bool NextSong() override;
+    virtual bool PreviousSong() override;
+    virtual void StopPlaylist() override;
+    virtual bool IsPlaylistMode() const override { return playlist_mode_.load(); }
+    virtual int GetCurrentPlaylistIndex() const override { return current_playlist_index_.load(); }
+    virtual size_t GetPlaylistSize() const override;
+    virtual SongInfo GetCurrentSong() const override;
 };
 
 #endif // ESP32_MUSIC_H

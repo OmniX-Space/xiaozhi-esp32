@@ -18,8 +18,159 @@
 
 #include "assets/lang_config.h"
 #include "power_manager.h"
+#include "alarm_manager.h"  // 用于检测和停止闹钟
+
+#if IDLE_SCREEN_HOOK
+#include "idle_screen.h"
+#include "weather_service.h"
+#endif
 
 #define TAG "GenJuTech_s3_1_54TFT"
+
+#if IDLE_SCREEN_HOOK
+LV_FONT_DECLARE(font_puhui_20_4);
+
+// Extended SpiLcdDisplay with idle screen support
+class SpiLcdDisplayEx : public SpiLcdDisplay {
+public:
+    SpiLcdDisplayEx(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
+                  int width, int height, int offset_x, int offset_y,
+                  bool mirror_x, bool mirror_y, bool swap_xy) :
+                  SpiLcdDisplay(panel_io, panel,
+                  width, height, offset_x, offset_y,
+                  mirror_x, mirror_y, swap_xy) {
+        DisplayLockGuard lock(this);
+        lv_obj_set_style_pad_left(status_bar_, 20, 0);
+        lv_obj_set_style_pad_right(status_bar_, 20, 0);
+    }
+
+    virtual void OnStateChanged() override {
+        DisplayLockGuard lock(this);
+        auto& app = Application::GetInstance();
+        auto device_state = app.GetDeviceState();
+        switch (device_state) {
+            case kDeviceStateIdle:
+                ESP_LOGI(TAG, "hide xiaozhi, show idle screen");
+                if (!lv_obj_has_flag(container_, LV_OBJ_FLAG_HIDDEN)) {
+                    lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
+                }
+                _lcdScnIdle.ui_showScreen(true);
+                break;
+
+            case kDeviceStateListening:
+            case kDeviceStateConnecting:
+            case kDeviceStateSpeaking:
+                ESP_LOGI(TAG, "show xiaozhi, hide idle screen");
+                _lcdScnIdle.ui_showScreen(false);
+                if (lv_obj_has_flag(container_, LV_OBJ_FLAG_HIDDEN)) {
+                    lv_obj_clear_flag(container_, LV_OBJ_FLAG_HIDDEN);
+                }
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    virtual void OnClockTimer() override {
+        DisplayLockGuard lock(this);
+        _lcdScnIdle.ui_update(); // update screen every 1s
+    }
+
+    void IdleScrSetupUi() {
+        DisplayLockGuard lock(this);  // ← 必须加锁！LVGL不是线程安全的
+        ESP_LOGI(TAG, "IdleScrSetupUi()");
+        // Get ThemeColors from current theme
+        ThemeColors theme_colors;
+        theme_colors.background = lv_color_hex(0x000000);
+        theme_colors.text = lv_color_hex(0xFFFFFF);
+        theme_colors.border = lv_color_hex(0x444444);
+        theme_colors.chat_background = lv_color_hex(0x111111);
+        theme_colors.user_bubble = lv_color_hex(0x0078D4);
+        theme_colors.assistant_bubble = lv_color_hex(0x2D2D2D);
+        theme_colors.system_bubble = lv_color_hex(0x1A1A1A);
+        theme_colors.system_text = lv_color_hex(0xFFFFFF);
+        theme_colors.low_battery = lv_color_hex(0xFF0000);
+        
+        _lcdScnIdle.ui_init(&theme_colors);
+    }
+    
+    void UpdateTheme() {
+        DisplayLockGuard lock(this);  // ← 必须加锁！
+        ThemeColors theme_colors;
+        theme_colors.background = lv_color_hex(0x000000);
+        theme_colors.text = lv_color_hex(0xFFFFFF);
+        theme_colors.border = lv_color_hex(0x444444);
+        theme_colors.chat_background = lv_color_hex(0x111111);
+        theme_colors.user_bubble = lv_color_hex(0x0078D4);
+        theme_colors.assistant_bubble = lv_color_hex(0x2D2D2D);
+        theme_colors.system_bubble = lv_color_hex(0x1A1A1A);
+        theme_colors.system_text = lv_color_hex(0xFFFFFF);
+        theme_colors.low_battery = lv_color_hex(0xFF0000);
+        
+        _lcdScnIdle.ui_updateTheme(&theme_colors);
+    }
+
+    // Override alarm display methods
+    virtual void ShowAlarmOnIdleScreen(const char* alarm_message) override {
+        DisplayLockGuard lock(this);
+        ESP_LOGI(TAG, "ShowAlarmOnIdleScreen: %s", alarm_message);
+        _lcdScnIdle.ui_showAlarmInfo(alarm_message);
+        
+        // Make sure idle screen is visible
+        if (!_lcdScnIdle.ui_shown) {
+            _lcdScnIdle.ui_showScreen(true);
+        }
+        
+        // Hide xiaozhi interface
+        if (!lv_obj_has_flag(container_, LV_OBJ_FLAG_HIDDEN)) {
+            lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    
+    virtual void HideAlarmOnIdleScreen() override {
+        DisplayLockGuard lock(this);
+        ESP_LOGI(TAG, "HideAlarmOnIdleScreen");
+        _lcdScnIdle.ui_hideAlarmInfo();
+    }
+    
+    void InitWeatherService() {
+        ESP_LOGI(TAG, "Initializing weather service");
+        
+        // Start weather update task
+        xTaskCreate([](void* param) {
+            auto* self = static_cast<SpiLcdDisplayEx*>(param);
+            ESP_LOGI(TAG, "Weather update task started");
+            
+            // Wait 5 seconds for WiFi to connect
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            
+            // Auto-detect city code by IP (leave empty string for auto-detect)
+            // Or specify a city code like "101010100" for Beijing
+            self->weather_service_.Initialize("");  // Empty = auto-detect
+            
+            // Set callback to update UI when weather data is received
+            self->weather_service_.SetWeatherCallback([self](const WeatherData& weather) {
+                DisplayLockGuard lock(self);
+                self->_lcdScnIdle.ui_updateWeather(weather);
+            });
+            
+            // Fetch weather immediately after initialization
+            self->weather_service_.FetchWeather();
+            
+            // Continue updating weather every 10 minutes
+            while (true) {
+                vTaskDelay(pdMS_TO_TICKS(600000));  // 10 minutes
+                self->weather_service_.FetchWeather();
+            }
+        }, "weather_task", 8192, this, 5, NULL);  // Increased stack size for HTTP operations
+    }
+
+private:
+    IdleScreen _lcdScnIdle;
+    WeatherService weather_service_;
+};
+#endif // IDLE_SCREEN_HOOK
 
 class SparkBotEs8311AudioCodec : public Es8311AudioCodec {
     private:    
@@ -49,7 +200,11 @@ private:
     Button boot_button_;
     Button volume_up_button_;
     Button volume_down_button_;
+#if IDLE_SCREEN_HOOK
+    SpiLcdDisplayEx* display_;
+#else
     LcdDisplay* display_;
+#endif
     i2c_master_bus_handle_t codec_i2c_bus_;
     PowerSaveTimer* power_save_timer_;
     PowerManager* power_manager_;
@@ -109,6 +264,18 @@ private:
         boot_button_.OnClick([this]() {
             power_save_timer_->WakeUp();
             auto& app = Application::GetInstance();
+            
+            // 如果有闹钟正在播放，优先停止闹钟，而不是切换界面
+            auto& alarm_manager = AlarmManager::GetInstance();
+            auto active_alarms = alarm_manager.GetActiveAlarms();
+            if (!active_alarms.empty()) {
+                ESP_LOGI(TAG, "Boot button pressed during alarm, stopping alarm");
+                for (const auto& alarm : active_alarms) {
+                    alarm_manager.StopAlarm(alarm.id);
+                }
+                return;  // 不切换界面
+            }
+            
             if (app.GetDeviceState() == kDeviceStateStarting && !WifiStation::GetInstance().IsConnected()) {
                 ResetWifiConfiguration();
             }
@@ -196,8 +363,13 @@ private:
         ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
         ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel, true));
 
+#if IDLE_SCREEN_HOOK
+        display_ = new SpiLcdDisplayEx(panel_io, panel,
+                            DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+#else
         display_ = new SpiLcdDisplay(panel_io, panel,
                             DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+#endif
     }
 
 public:
@@ -213,6 +385,12 @@ public:
         InitializeButtons();
         InitializeSt7789Display();
         GetBacklight()->RestoreBrightness();
+        
+#if IDLE_SCREEN_HOOK
+        auto* display_ex = static_cast<SpiLcdDisplayEx*>(display_);
+        display_ex->IdleScrSetupUi();
+        display_ex->InitWeatherService();
+#endif
     }
 
     virtual Led* GetLed() override {
